@@ -1,8 +1,14 @@
 
 
 #include <cstdio>
+#include <cstdlib>
+
 #include <iostream>
 #include <chrono>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
 
 #include "Initial3D.hpp"
 #include "Flareon.hpp"
@@ -16,8 +22,81 @@ using namespace initial3d;
 
 ShaderManager *shaderman;
 
+struct lens_interface {
+	// sphere radius
+	// +ve => front-convex, -ve => front-concave
+	// 0 => this isnt a lens
+	double sr;
+	// z-position of this surface on optical axis
+	double z;
+	// refractive indices in front of and behind this surface
+	double n0, n2;
+	// aperture radius
+	// 0 => sensor plane
+	double ap;
+};
 
+// lens interfaces, in order from entry to sensor
+vector<lens_interface> interfaces;
 
+void precompute(const string &path) {
+	// parse the lens specification file
+	ifstream ifs(path);
+	if (!ifs.is_open()) {
+		throw runtime_error("unable to open file '" + path + "'");
+	}
+	
+	double n_last = 1.0;
+	while (ifs.good()) {
+		string line;
+		getline(ifs, line);
+		istringstream iss(line);
+		string t0;
+		iss >> t0;
+		if (!iss.good()) continue;
+		if (t0[0] == '#') continue;
+		iss.seekg(0);
+		double sr, dz, n, ap;
+		iss >> sr >> dz >> n >> ap;
+		if (iss.fail()) {
+			log("LensData").warning() << "Encountered invalid line '" << line << "' in file '" << path << "'";
+		} else {
+			lens_interface li;
+			li.sr = sr;
+			li.z = 0;
+			li.n0 = n_last;
+			li.n2 = n;
+			li.ap = ap;
+			n_last = n;
+			for (auto it = interfaces.begin(); it != interfaces.end(); it++) {
+				it->z += dz;
+			}
+			interfaces.push_back(li);
+		}
+	}
+	
+	if (interfaces.size() == 0) {
+		log("LensData").error() << "Lens data is empty";
+		throw runtime_error("lens data is empty");
+	}
+	
+	if (interfaces.back().ap > 0) {
+		log("LensData").warning() << "Lens configuration has no sensor plane";
+	}
+	
+	// ???
+	
+}
+
+void upload_uniforms(GLuint prog) {
+	glUniform1ui(glGetUniformLocation(prog, "num_interfaces"), interfaces.size());
+	glUniform1ui(glGetUniformLocation(prog, "num_ghosts"), 1);
+	for (unsigned i = 0; i < interfaces.size(); i++) {
+		// TODO
+	}
+}
+
+// width and height are in terms of on-screen triangles
 template <unsigned Width, unsigned Height>
 void draw_fullscreen_grid_adjacency() {
 	static_assert(Width >= 1 && Height >= 1, "grid must be at least 1x1");
@@ -112,10 +191,17 @@ void display(const size2i &sz) {
 	glViewport(0, 0, sz.w, sz.h);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	glUseProgram(shaderman->getProgram("flare.glsl"));
+	GLuint prog_flare = shaderman->getProgram("flare.glsl");
+
+	glUseProgram(prog_flare);
+	upload_uniforms(prog_flare);
 
 	checkGL();
-
+	
+	glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	
+	// one pass per wavelength and blend?
+	
 	draw_fullscreen_grid_adjacency<32, 32>();
 
 	checkGL();
@@ -127,7 +213,12 @@ void display(const size2i &sz) {
 }
 
 int main(int argc, char *argv[]) {
-
+	
+	if (argc < 2) {
+		log().error() << "Usage: flareon <lensdata>";
+		exit(1);
+	}
+	
 	Window *win = createWindow().size(512, 512).title("I Choose You, Flareon!").visible(true);
 	win->makeContextCurrent();
 
@@ -140,7 +231,10 @@ int main(int argc, char *argv[]) {
 
 	auto time_fps = chrono::steady_clock::now();
 	unsigned fps = 0;
-
+	
+	// lens-specific precomputation
+	precompute(argv[1]);
+	
 	while (!win->shouldClose()) {
 		auto now = chrono::steady_clock::now();
 		if (now - time_fps > chrono::seconds(1)) {
@@ -165,3 +259,33 @@ int main(int argc, char *argv[]) {
 
 	return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

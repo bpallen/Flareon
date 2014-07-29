@@ -1,0 +1,22 @@
+Empty lines and lines beginning with # are ignored.
+
+Lens data consists of a single line per optical surface. For example, a system
+with a single lens will have 2 lines. A system with two lenses touching would
+have 3 lines (front,back and touching surface).
+
+The order of the lines is from the front (where the light enters) of the lens
+system to the back (closest to the film,sensor).
+
+Each line consists of four values:
+  1) radius: The radius of curvature (all surfaces are assumed to be spherical).
+     The value is positive if, when looking from the front, the surface is
+     convex (curves away from the viewer). The value is negative if the surface
+     is concave (curves toward the viewer).
+     If the value is zero, the surface is assumed to be an (flat) aperture stop.
+  2) axpos: The distance between the current surface and the next.
+  3) N: the index of refraction. A value of 1.0 is assumed to be air.
+  4) aperture: the aperture of the surface (note, this can be different for
+     the two sides of a lens)
+
+Rays which miss any lens surface (or hit the aperture stop) are assumed to be
+blocked.
