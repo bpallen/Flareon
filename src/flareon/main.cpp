@@ -22,22 +22,35 @@ using namespace initial3d;
 
 ShaderManager *shaderman;
 
+// uniform buffer objects for lens system and precomputed bounce sequences
+GLuint ubo_lens = 0;
+GLuint ubo_bounce = 0;
+
+// wavelength to optimize antireflective coating for
+double wavelen_ar = 500e-9;
+
 struct lens_interface {
 	// sphere radius
 	// +ve => front-convex, -ve => front-concave
 	// 0 => this isnt a lens
 	double sr;
-	// z-position of this surface on optical axis
-	double z;
-	// refractive indices in front of and behind this surface
-	double n0, n2;
 	// aperture radius
 	// 0 => sensor plane
-	double ap;
+	double ar;
+	// z-position of this surface on optical axis
+	double z;
+	// thickness of antireflective coating
+	double d1;
+	// refractive indices
+	// n0 = refractive index of front material
+	// n1 = refractive index of anti-reflective coating
+	// n2 = refractive index of back material
+	double n0, n1, n2;
 };
 
 // lens interfaces, in order from entry to sensor
 vector<lens_interface> interfaces;
+unsigned num_ghosts = 0;
 
 void precompute(const string &path) {
 	// parse the lens specification file
@@ -56,18 +69,29 @@ void precompute(const string &path) {
 		if (!iss.good()) continue;
 		if (t0[0] == '#') continue;
 		iss.seekg(0);
-		double sr, dz, n, ap;
-		iss >> sr >> dz >> n >> ap;
+		double sr, dz, n, ar;
+		iss >> sr >> dz >> n >> ar;
 		if (iss.fail()) {
 			log("LensData").warning() << "Encountered invalid line '" << line << "' in file '" << path << "'";
 		} else {
+			// correct mm -> m
+			sr /= 1000.0;
+			dz /= 1000.0;
+			ar /= 1000.0;
+			// correct aperture diameter -> radius
+			ar *= 0.5;
+			// add to interfaces list
 			lens_interface li;
 			li.sr = sr;
 			li.z = 0;
 			li.n0 = n_last;
 			li.n2 = n;
-			li.ap = ap;
+			li.ar = ar;
+			// compute characteristics of antireflective coating
+			li.n1 = math::max(math::sqrt(li.n0 * li.n2), 1.38);
+			li.d1 = wavelen_ar / 4.0 / li.n1;
 			n_last = n;
+			// move absolute positions of already-loaded interfaces (because they're specified relatively, front to back)
 			for (auto it = interfaces.begin(); it != interfaces.end(); it++) {
 				it->z += dz;
 			}
@@ -80,25 +104,54 @@ void precompute(const string &path) {
 		throw runtime_error("lens data is empty");
 	}
 	
-	if (interfaces.back().ap > 0) {
+	if (interfaces.back().ar > 0) {
 		log("LensData").warning() << "Lens configuration has no sensor plane";
 	}
 	
-	// ???
-	
-}
-
-void upload_uniforms(GLuint prog) {
-	glUniform1ui(glGetUniformLocation(prog, "num_interfaces"), interfaces.size());
-	glUniform1ui(glGetUniformLocation(prog, "num_ghosts"), 1);
+	// create uniform block for lens configuration
+	// this relies on the std140 layout of the uniform block
+	vector<GLuint> lens_block_bytes(4 + interfaces.size() * 8);
+	lens_block_bytes[0] = interfaces.size();
 	for (unsigned i = 0; i < interfaces.size(); i++) {
-		// TODO
+		unsigned j = 4 + i * 8;
+		// sr, ar, z, d1
+		reinterpret_cast<float &>(lens_block_bytes[j + 0]) = interfaces[i].sr;
+		reinterpret_cast<float &>(lens_block_bytes[j + 1]) = interfaces[i].ar;
+		reinterpret_cast<float &>(lens_block_bytes[j + 2]) = interfaces[i].z;
+		reinterpret_cast<float &>(lens_block_bytes[j + 3]) = interfaces[i].d1;
+		// n0, n1, n2
+		reinterpret_cast<float &>(lens_block_bytes[j + 4]) = interfaces[i].n0;
+		reinterpret_cast<float &>(lens_block_bytes[j + 5]) = interfaces[i].n1;
+		reinterpret_cast<float &>(lens_block_bytes[j + 6]) = interfaces[i].n2;
 	}
+
+	// upload lens uniform buffer
+	if (!ubo_lens) glDeleteBuffers(1, &ubo_lens);
+	glGenBuffers(1, &ubo_lens);
+	glBindBuffer(GL_UNIFORM_BUFFER, ubo_lens);
+	glBufferData(GL_UNIFORM_BUFFER, lens_block_bytes.size() * sizeof(GLuint), &lens_block_bytes[0], GL_STATIC_DRAW);
+
+	// create uniform block for bounce enumeration
+	// TODO properly, hard coded single ghost for now
+	vector<GLuint> bounce_block_bytes(4);
+	bounce_block_bytes[0] = 5;
+	bounce_block_bytes[1] = 4;
+	num_ghosts = 1;
+
+	// upload bounce uniform buffer
+	if (!ubo_bounce) glDeleteBuffers(1, &ubo_bounce);
+	glGenBuffers(1, &ubo_bounce);
+	glBindBuffer(GL_UNIFORM_BUFFER, ubo_bounce);
+	glBufferData(GL_UNIFORM_BUFFER, bounce_block_bytes.size() * sizeof(GLuint), &bounce_block_bytes[0], GL_STATIC_DRAW);
+
+	// cleanup
+	glBindBuffer(GL_UNIFORM_BUFFER, 0);
+	
 }
 
 // width and height are in terms of on-screen triangles
 template <unsigned Width, unsigned Height>
-void draw_fullscreen_grid_adjacency() {
+void draw_fullscreen_grid_adjacency_border_instanced(unsigned instances) {
 	static_assert(Width >= 1 && Height >= 1, "grid must be at least 1x1");
 	static GLuint vao = 0;
 	if (vao == 0) {
@@ -141,13 +194,13 @@ void draw_fullscreen_grid_adjacency() {
 		auto push_index = [&](int i, int j) {
 			// index 0 is reserved for 'not a vertex'
 			int ii = 0;
-			if (i >= 0 && i <= Width + 1 && j >= 0 && j <= Height + 1) {
+			if (i >= 0 && i <= Width + 2 && j >= 0 && j <= Height + 2) {
 				ii = 1 + y_vals.size() * i + j;
 			}
 			indices.push_back(unsigned(ii));
 		};
-		for (unsigned i = 1; i < Width + 1; i++) {
-			for (unsigned j = 1; j < Height + 1; j++) {
+		for (unsigned i = 0; i < Width + 2; i++) {
+			for (unsigned j = 0; j < Height + 2; j++) {
 				// first tri (:), p1=(i,j)
 				// 6---5---4 //
 				//   \ |:\ | //
@@ -182,11 +235,18 @@ void draw_fullscreen_grid_adjacency() {
 		glBindBuffer(GL_ARRAY_BUFFER, 0); // cleanup
 	}
 	glBindVertexArray(vao);
-	glDrawElements(GL_TRIANGLES_ADJACENCY, Width * Height * 12, GL_UNSIGNED_INT, nullptr);
+	glDrawElementsInstanced(GL_TRIANGLES_ADJACENCY, (Width + 2) * (Height + 2) * 12, GL_UNSIGNED_INT, nullptr, instances);
 	glBindVertexArray(0);
 }
 
 void display(const size2i &sz) {
+
+	// height of the sensor
+	// temp - set to fraction of diameter of first interface's aperture
+	double sensor_h = 0.5 * interfaces[0].ar * 2;
+
+	// orthographic projection, just to scale things properly
+	mat4d proj = mat4d::scale(double(sz.h) / double(sz.w), 1.0, 1.0) * mat4d::scale(2.0 / sensor_h);
 
 	glViewport(0, 0, sz.w, sz.h);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -194,16 +254,32 @@ void display(const size2i &sz) {
 	GLuint prog_flare = shaderman->getProgram("flare.glsl");
 
 	glUseProgram(prog_flare);
-	upload_uniforms(prog_flare);
+	
+	// bind uniform buffer objects
+	glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_lens);
+	glBindBufferBase(GL_UNIFORM_BUFFER, 1, ubo_bounce);
+	glUniformBlockBinding(prog_flare, glGetUniformBlockIndex(prog_flare, "InterfacesBlock"), 0);
+	glUniformBlockBinding(prog_flare, glGetUniformBlockIndex(prog_flare, "BouncesBlock"), 1);
+
+	// set other uniforms
+	glUniformMatrix4fv(glGetUniformLocation(prog_flare, "proj_matrix"), 1, true, mat4f(proj));
+	glUniform1f(glGetUniformLocation(prog_flare, "lens_scale"), interfaces[0].ar);
 
 	checkGL();
 	
-	glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	// temp
+	//glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	
-	// one pass per wavelength and blend?
-	
-	draw_fullscreen_grid_adjacency<32, 32>();
-
+	// instance the ghosts (batched by complexity == grid resolution)
+	// do multiple wavelengths at once
+	// blend ghosts together
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_DEPTH_TEST);
+	glEnable(GL_BLEND);
+	glBlendEquation(GL_FUNC_ADD);
+	glBlendFunc(GL_ONE, GL_ONE);
+	draw_fullscreen_grid_adjacency_border_instanced<512, 512>(1);
+	glDisable(GL_BLEND);
 	checkGL();
 
 	glUseProgram(0);
@@ -223,7 +299,7 @@ int main(int argc, char *argv[]) {
 	win->makeContextCurrent();
 
 	shaderman = new ShaderManager("./res/shader");
-
+	
 	win->onResize.attach([](const window_size_event &e) {
 
 		return false;

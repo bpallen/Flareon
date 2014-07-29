@@ -1519,7 +1519,7 @@ namespace initial3d {
 		
 		// scalar multiply, other order
 		inline friend mat4<T> operator*(const T & lhs, const mat4<T> & rhs) {
-			return rhs->multiply(lhs);
+			return rhs.multiply(lhs);
 		}
 		
 		// scalar divide
