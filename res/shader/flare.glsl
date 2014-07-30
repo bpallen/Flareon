@@ -60,6 +60,7 @@ struct Intersection {
 // lens configuration
 layout(std140) uniform InterfacesBlock {
 	uint num_interfaces;
+	uint aperture_index;
 	LensInterface interfaces[MAX_INTERFACES];
 };
 
@@ -161,20 +162,23 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 		delta *= should_reflect ? -1 : 1;
 		stage += uint(should_reflect);
 
-		// test intersection, record max relative radius or aperture tex coord
+		// test intersection, record aperture tex coord
 		Intersection isect;
 		if (li.sr > 0.0) {
 			// spherical lens
 			isect = intersect_sphere(ray, li);
-			ray.tex.z = max(ray.tex.z, length(isect.pos.xy) / li.ar);
 		} else {
 			isect = intersect_plane(ray, li);
 			// assume its the aperture (if radius > 0)
-			ray.tex.xy = mix(ray.tex.xy, isect.pos.xy / li.ar, bvec2(li.ar > 0.0));
+			// TODO is this getting it right?
+			ray.tex.xy = mix(ray.tex.xy, isect.pos.xy / li.ar, bvec2(i == int(aperture_index)));
 		}
 
 		// exit on miss
 		if (!isect.hit) break;
+		
+		// record max relative radius
+		ray.tex.z = max(ray.tex.z, mix(0.0, length(isect.pos.xy) / li.ar, li.ar > 0.0));
 
 		// update ray direction and position
 		ray.dir = normalize(isect.pos - ray.pos); // why do i need this?
@@ -226,7 +230,7 @@ void main() {
 	// entrance ray
 	Ray r0;
 	r0.pos = vec3(lens_scale * pos_p, interfaces[0].z + 0.001);
-	r0.dir = vec3(0.0, 0.0, -1.0);
+	r0.dir = normalize(vec3(0.0, 0.0, -1.0));
 	r0.tex = vec4(vec3(0.0), 1.0);
 	// TODO wavelength? light direction?
 	vertex_out.ray = trace(uint(gl_InstanceID), r0, 550e-9);
@@ -247,6 +251,7 @@ in VertexData {
 
 out VertexData {
 	noperspective vec4 tex;
+	noperspective vec2 pos;
 } vertex_out;
 
 void main() {
@@ -255,12 +260,15 @@ void main() {
 	Ray r4 = vertex_in[4].ray;
 	vertex_out.tex = r0.tex;
 	gl_Position = proj_matrix * vec4(r0.pos.xy, 0.0, 1.0);
+	vertex_out.pos = gl_Position.xy;
 	EmitVertex();
 	vertex_out.tex = r2.tex;
 	gl_Position = proj_matrix * vec4(r2.pos.xy, 0.0, 1.0);
+	vertex_out.pos = gl_Position.xy;
 	EmitVertex();
 	vertex_out.tex = r4.tex;
 	gl_Position = proj_matrix * vec4(r4.pos.xy, 0.0, 1.0);
+	vertex_out.pos = gl_Position.xy;
 	EmitVertex();
 	EndPrimitive();
 }
@@ -272,15 +280,20 @@ void main() {
 
 in VertexData {
 	noperspective vec4 tex;
+	noperspective vec2 pos;
 } vertex_in;
 
 out vec4 frag_color;
 
 void main() {
 	if (vertex_in.tex.z > 1.0) discard;
-
+	
+	vec2 f = abs(vertex_in.tex.xy / vertex_in.pos);
+	
 	frag_color = vec4(0.4 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
 	//frag_color = length(vertex_in.tex.xy) < 0.2 ? vec4(10.0 * vertex_in.tex.a, 0.0, 0.0, 1.0) : vec4(0.0);
+	
+	//frag_color = vec4(f * 0.5, 0.0, 1.0);
 }
 
 #endif

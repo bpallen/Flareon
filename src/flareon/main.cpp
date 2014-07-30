@@ -66,7 +66,7 @@ void precompute(const string &path) {
 		istringstream iss(line);
 		string t0;
 		iss >> t0;
-		if (!iss.good()) continue;
+		if (iss.fail()) continue;
 		if (t0[0] == '#') continue;
 		iss.seekg(0);
 		double sr, dz, n, ar;
@@ -112,6 +112,8 @@ void precompute(const string &path) {
 	// this relies on the std140 layout of the uniform block
 	vector<GLuint> lens_block_bytes(4 + interfaces.size() * 8);
 	lens_block_bytes[0] = interfaces.size();
+	// TODO properly, hard coded aperture index for now
+	lens_block_bytes[1] = 2;
 	for (unsigned i = 0; i < interfaces.size(); i++) {
 		unsigned j = 4 + i * 8;
 		// sr, ar, z, d1
@@ -134,8 +136,8 @@ void precompute(const string &path) {
 	// create uniform block for bounce enumeration
 	// TODO properly, hard coded single ghost for now
 	vector<GLuint> bounce_block_bytes(4);
-	bounce_block_bytes[0] = 5;
-	bounce_block_bytes[1] = 4;
+	bounce_block_bytes[0] = 1;
+	bounce_block_bytes[1] = 0;
 	num_ghosts = 1;
 
 	// upload bounce uniform buffer
@@ -243,7 +245,7 @@ void display(const size2i &sz) {
 
 	// height of the sensor
 	// temp - set to fraction of diameter of first interface's aperture
-	double sensor_h = 0.5 * interfaces[0].ar * 2;
+	double sensor_h = interfaces[0].ar * 2;
 
 	// orthographic projection, just to scale things properly
 	mat4d proj = mat4d::scale(double(sz.h) / double(sz.w), 1.0, 1.0) * mat4d::scale(2.0 / sensor_h);
@@ -268,7 +270,7 @@ void display(const size2i &sz) {
 	checkGL();
 	
 	// temp
-	//glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	
 	// instance the ghosts (batched by complexity == grid resolution)
 	// do multiple wavelengths at once
@@ -278,7 +280,7 @@ void display(const size2i &sz) {
 	glEnable(GL_BLEND);
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
-	draw_fullscreen_grid_adjacency_border_instanced<512, 512>(1);
+	draw_fullscreen_grid_adjacency_border_instanced<32, 32>(1);
 	glDisable(GL_BLEND);
 	checkGL();
 
@@ -305,18 +307,18 @@ int main(int argc, char *argv[]) {
 		return false;
 	});
 
-	auto time_fps = chrono::steady_clock::now();
-	unsigned fps = 0;
-	
 	// lens-specific precomputation
 	precompute(argv[1]);
+	
+	auto time_fps = chrono::steady_clock::now();
+	unsigned fps = 0;
 	
 	while (!win->shouldClose()) {
 		auto now = chrono::steady_clock::now();
 		if (now - time_fps > chrono::seconds(1)) {
 			time_fps = now;
 			char cbuf[100];
-			sprintf(cbuf, "Flareon [%d FPS @%dx%d", fps, win->width(), win->height());
+			sprintf(cbuf, "Flareon [%d FPS @%dx%d]", fps, win->width(), win->height());
 			win->title(cbuf);
 			fps = 0;
 		}
