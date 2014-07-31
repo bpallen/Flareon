@@ -159,19 +159,22 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 
 		// does this sequence reflect off this interface?
 		bool should_reflect = i == bounce[stage];
-		delta *= should_reflect ? -1 : 1;
+		delta = should_reflect ? -delta : delta;
 		stage += uint(should_reflect);
 
 		// test intersection, record aperture tex coord
 		Intersection isect;
-		if (li.sr > 0.0) {
+		if (abs(li.sr) > 0.0) {
 			// spherical lens
 			isect = intersect_sphere(ray, li);
 		} else {
 			isect = intersect_plane(ray, li);
-			// assume its the aperture (if radius > 0)
+			// record coord if its the aperture, otherwise do nothing
 			// TODO is this getting it right?
-			ray.tex.xy = mix(ray.tex.xy, isect.pos.xy / li.ar, bvec2(i == int(aperture_index)));
+			if (i == int(aperture_index)) {
+				ray.tex.xy = isect.pos.xy / li.ar;
+				ray.tex.a += 1.0;
+			}
 		}
 
 		// exit on miss
@@ -186,7 +189,7 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 		ray.pos = isect.pos;
 
 		// reflection / refraction
-		if (li.sr > 0.0) {
+		if (abs(li.sr) > 0.0) {
 			
 			// swap order of refractive indices if ray going in 'reverse'
 			vec3 n = mix(li.n.xyz, li.n.zyx, bvec3(ray.dir.z > 0.0));
@@ -194,7 +197,7 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 			if (should_reflect) {
 				// reflection with AR coating
 				ray.dir = reflect(ray.dir, isect.norm);
-				ray.tex.a *= fresnel_ar(isect.theta, wavelen, li.d1, n);
+				//ray.tex.a *= fresnel_ar(isect.theta, wavelen, li.d1, n);
 			} else {
 				// refraction
 				ray.dir = refract(ray.dir, isect.norm, n.x / n.z);
@@ -206,7 +209,7 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 
 	if (i < int(num_interfaces)) {
 		// ignore early exits
-		ray.tex.a = 0.0;
+		//ray.tex.a = 0.0;
 	}
 
 	return ray;
@@ -231,7 +234,7 @@ void main() {
 	Ray r0;
 	r0.pos = vec3(lens_scale * pos_p, interfaces[0].z + 0.001);
 	r0.dir = normalize(vec3(0.0, 0.0, -1.0));
-	r0.tex = vec4(vec3(0.0), 1.0);
+	r0.tex = vec4(vec3(0.0), 0.0);
 	// TODO wavelength? light direction?
 	vertex_out.ray = trace(uint(gl_InstanceID), r0, 550e-9);
 }
@@ -251,7 +254,7 @@ in VertexData {
 
 out VertexData {
 	noperspective vec4 tex;
-	noperspective vec2 pos;
+	noperspective vec3 pos;
 } vertex_out;
 
 void main() {
@@ -259,16 +262,16 @@ void main() {
 	Ray r2 = vertex_in[2].ray;
 	Ray r4 = vertex_in[4].ray;
 	vertex_out.tex = r0.tex;
+	vertex_out.pos = r0.pos;
 	gl_Position = proj_matrix * vec4(r0.pos.xy, 0.0, 1.0);
-	vertex_out.pos = gl_Position.xy;
 	EmitVertex();
 	vertex_out.tex = r2.tex;
+	vertex_out.pos = r2.pos;
 	gl_Position = proj_matrix * vec4(r2.pos.xy, 0.0, 1.0);
-	vertex_out.pos = gl_Position.xy;
 	EmitVertex();
 	vertex_out.tex = r4.tex;
+	vertex_out.pos = r4.pos;
 	gl_Position = proj_matrix * vec4(r4.pos.xy, 0.0, 1.0);
-	vertex_out.pos = gl_Position.xy;
 	EmitVertex();
 	EndPrimitive();
 }
@@ -280,20 +283,23 @@ void main() {
 
 in VertexData {
 	noperspective vec4 tex;
-	noperspective vec2 pos;
+	noperspective vec3 pos;
 } vertex_in;
 
 out vec4 frag_color;
 
 void main() {
-	if (vertex_in.tex.z > 1.0) discard;
+	//if (vertex_in.tex.z > 1.0) discard;
 	
-	vec2 f = abs(vertex_in.tex.xy / vertex_in.pos);
+	//vec2 f = abs(vertex_in.tex.xy / vertex_in.pos);
 	
 	frag_color = vec4(0.4 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
+	
 	//frag_color = length(vertex_in.tex.xy) < 0.2 ? vec4(10.0 * vertex_in.tex.a, 0.0, 0.0, 1.0) : vec4(0.0);
 	
 	//frag_color = vec4(f * 0.5, 0.0, 1.0);
+	
+	//frag_color = abs(vertex_in.pos.z) < 0.0005 ? vec4(0.5 * vertex_in.tex.a, 0.0, 0.0, 1.0) : vec4(0.0);
 }
 
 #endif

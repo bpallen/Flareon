@@ -107,6 +107,8 @@ void precompute(const string &path) {
 	if (interfaces.back().ar > 0) {
 		log("LensData").warning() << "Lens configuration has no sensor plane";
 	}
+
+	log("LensData") << interfaces.size() << " lens interfaces loaded";
 	
 	// create uniform block for lens configuration
 	// this relies on the std140 layout of the uniform block
@@ -270,7 +272,7 @@ void display(const size2i &sz) {
 	checkGL();
 	
 	// temp
-	glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	//glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	
 	// instance the ghosts (batched by complexity == grid resolution)
 	// do multiple wavelengths at once
@@ -280,7 +282,7 @@ void display(const size2i &sz) {
 	glEnable(GL_BLEND);
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
-	draw_fullscreen_grid_adjacency_border_instanced<32, 32>(1);
+	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(1);
 	glDisable(GL_BLEND);
 	checkGL();
 
