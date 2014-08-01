@@ -60,6 +60,7 @@ void precompute(const string &path) {
 	}
 	
 	double n_last = 1.0;
+	double dz_last = 0.0;
 	while (ifs.good()) {
 		string line;
 		getline(ifs, line);
@@ -80,7 +81,7 @@ void precompute(const string &path) {
 			ar /= 1000.0;
 			// correct aperture diameter -> radius
 			ar *= 0.5;
-			// add to interfaces list
+			// create interface
 			lens_interface li;
 			li.sr = sr;
 			li.z = 0;
@@ -90,11 +91,14 @@ void precompute(const string &path) {
 			// compute characteristics of antireflective coating
 			li.n1 = math::max(math::sqrt(li.n0 * li.n2), 1.38);
 			li.d1 = wavelen_ar / 4.0 / li.n1;
-			n_last = n;
 			// move absolute positions of already-loaded interfaces (because they're specified relatively, front to back)
 			for (auto it = interfaces.begin(); it != interfaces.end(); it++) {
-				it->z += dz;
+				it->z += dz_last;
 			}
+			// update parser state
+			n_last = n;
+			dz_last = dz;
+			// add to interfaces list
 			interfaces.push_back(li);
 		}
 	}
@@ -109,44 +113,47 @@ void precompute(const string &path) {
 	}
 
 	log("LensData") << interfaces.size() << " lens interfaces loaded";
+	for (auto li : interfaces) {
+		log("LensData") << "z=" << li.z;
+	}
 	
 	// create uniform block for lens configuration
 	// this relies on the std140 layout of the uniform block
-	vector<GLuint> lens_block_bytes(4 + interfaces.size() * 8);
-	lens_block_bytes[0] = interfaces.size();
+	vector<GLuint> lens_block_words(4 + interfaces.size() * 8);
+	lens_block_words[0] = interfaces.size();
 	// TODO properly, hard coded aperture index for now
-	lens_block_bytes[1] = 2;
+	lens_block_words[1] = 5;
 	for (unsigned i = 0; i < interfaces.size(); i++) {
 		unsigned j = 4 + i * 8;
 		// sr, ar, z, d1
-		reinterpret_cast<float &>(lens_block_bytes[j + 0]) = interfaces[i].sr;
-		reinterpret_cast<float &>(lens_block_bytes[j + 1]) = interfaces[i].ar;
-		reinterpret_cast<float &>(lens_block_bytes[j + 2]) = interfaces[i].z;
-		reinterpret_cast<float &>(lens_block_bytes[j + 3]) = interfaces[i].d1;
+		reinterpret_cast<float &>(lens_block_words[j + 0]) = interfaces[i].sr;
+		reinterpret_cast<float &>(lens_block_words[j + 1]) = interfaces[i].ar;
+		reinterpret_cast<float &>(lens_block_words[j + 2]) = interfaces[i].z;
+		reinterpret_cast<float &>(lens_block_words[j + 3]) = interfaces[i].d1;
 		// n0, n1, n2
-		reinterpret_cast<float &>(lens_block_bytes[j + 4]) = interfaces[i].n0;
-		reinterpret_cast<float &>(lens_block_bytes[j + 5]) = interfaces[i].n1;
-		reinterpret_cast<float &>(lens_block_bytes[j + 6]) = interfaces[i].n2;
+		reinterpret_cast<float &>(lens_block_words[j + 4]) = interfaces[i].n0;
+		reinterpret_cast<float &>(lens_block_words[j + 5]) = interfaces[i].n1;
+		reinterpret_cast<float &>(lens_block_words[j + 6]) = interfaces[i].n2;
 	}
 
 	// upload lens uniform buffer
 	if (!ubo_lens) glDeleteBuffers(1, &ubo_lens);
 	glGenBuffers(1, &ubo_lens);
 	glBindBuffer(GL_UNIFORM_BUFFER, ubo_lens);
-	glBufferData(GL_UNIFORM_BUFFER, lens_block_bytes.size() * sizeof(GLuint), &lens_block_bytes[0], GL_STATIC_DRAW);
+	glBufferData(GL_UNIFORM_BUFFER, lens_block_words.size() * sizeof(GLuint), &lens_block_words[0], GL_STATIC_DRAW);
 
 	// create uniform block for bounce enumeration
 	// TODO properly, hard coded single ghost for now
-	vector<GLuint> bounce_block_bytes(4);
-	bounce_block_bytes[0] = 1;
-	bounce_block_bytes[1] = 0;
+	vector<GLuint> bounce_block_words(4);
+	bounce_block_words[0] = 7;
+	bounce_block_words[1] = 0;
 	num_ghosts = 1;
 
 	// upload bounce uniform buffer
 	if (!ubo_bounce) glDeleteBuffers(1, &ubo_bounce);
 	glGenBuffers(1, &ubo_bounce);
 	glBindBuffer(GL_UNIFORM_BUFFER, ubo_bounce);
-	glBufferData(GL_UNIFORM_BUFFER, bounce_block_bytes.size() * sizeof(GLuint), &bounce_block_bytes[0], GL_STATIC_DRAW);
+	glBufferData(GL_UNIFORM_BUFFER, bounce_block_words.size() * sizeof(GLuint), &bounce_block_words[0], GL_STATIC_DRAW);
 
 	// cleanup
 	glBindBuffer(GL_UNIFORM_BUFFER, 0);
@@ -282,7 +289,7 @@ void display(const size2i &sz) {
 	glEnable(GL_BLEND);
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
-	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(1);
+	draw_fullscreen_grid_adjacency_border_instanced<512, 512>(1);
 	glDisable(GL_BLEND);
 	checkGL();
 

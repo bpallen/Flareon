@@ -170,11 +170,8 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 		} else {
 			isect = intersect_plane(ray, li);
 			// record coord if its the aperture, otherwise do nothing
-			// TODO is this getting it right?
-			if (i == int(aperture_index)) {
-				ray.tex.xy = isect.pos.xy / li.ar;
-				ray.tex.a += 1.0;
-			}
+			// this can happend more than once, only the last intersection is used
+			ray.tex.xy = mix(ray.tex.xy, isect.pos.xy / li.ar, bvec2(i == int(aperture_index)));
 		}
 
 		// exit on miss
@@ -197,7 +194,7 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 			if (should_reflect) {
 				// reflection with AR coating
 				ray.dir = reflect(ray.dir, isect.norm);
-				//ray.tex.a *= fresnel_ar(isect.theta, wavelen, li.d1, n);
+				ray.tex.a *= fresnel_ar(isect.theta, wavelen, li.d1, n);
 			} else {
 				// refraction
 				ray.dir = refract(ray.dir, isect.norm, n.x / n.z);
@@ -209,7 +206,7 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 
 	if (i < int(num_interfaces)) {
 		// ignore early exits
-		//ray.tex.a = 0.0;
+		ray.tex.a = 0.0;
 	}
 
 	return ray;
@@ -233,8 +230,8 @@ void main() {
 	// entrance ray
 	Ray r0;
 	r0.pos = vec3(lens_scale * pos_p, interfaces[0].z + 0.001);
-	r0.dir = normalize(vec3(0.0, 0.0, -1.0));
-	r0.tex = vec4(vec3(0.0), 0.0);
+	r0.dir = normalize(vec3(0.1, 0.1, -1.0));
+	r0.tex = vec4(vec3(0.0), 1.0);
 	// TODO wavelength? light direction?
 	vertex_out.ray = trace(uint(gl_InstanceID), r0, 550e-9);
 }
@@ -289,17 +286,12 @@ in VertexData {
 out vec4 frag_color;
 
 void main() {
-	//if (vertex_in.tex.z > 1.0) discard;
+	if (vertex_in.tex.z > 1.0) discard;
 	
-	//vec2 f = abs(vertex_in.tex.xy / vertex_in.pos);
+	frag_color = vec4(0.2 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
 	
-	frag_color = vec4(0.4 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
+	//frag_color = vec4(100.0 * vertex_in.tex.a, 0.0, 0.0, 1.0);
 	
-	//frag_color = length(vertex_in.tex.xy) < 0.2 ? vec4(10.0 * vertex_in.tex.a, 0.0, 0.0, 1.0) : vec4(0.0);
-	
-	//frag_color = vec4(f * 0.5, 0.0, 1.0);
-	
-	//frag_color = abs(vertex_in.pos.z) < 0.0005 ? vec4(0.5 * vertex_in.tex.a, 0.0, 0.0, 1.0) : vec4(0.0);
 }
 
 #endif
