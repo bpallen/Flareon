@@ -95,7 +95,7 @@ Intersection intersect_plane(Ray ray, LensInterface li) {
 
 Intersection intersect_sphere(Ray ray, LensInterface li) {
 	Intersection isect;
-	vec3 centre = vec3(0.0, 0.0, li.z - li.sr);
+	vec3 centre = vec3(0.0, 0.0, li.z + li.sr);
 	vec3 d = ray.pos - centre;
 	float b = dot(d, ray.dir);
 	float c = dot(d, d) - li.sr * li.sr;
@@ -106,7 +106,7 @@ Intersection intersect_sphere(Ray ray, LensInterface li) {
 		return isect;
 	}
 
-	float sgn = mix(-1.0, 1.0, li.sr * ray.dir.z > 0.0);
+	float sgn = mix(-1.0, 1.0, li.sr * ray.dir.z < 0.0);
 	float t = sqrt(b2_c) * sgn - b;
 	isect.pos = ray.dir * t + ray.pos;
 	isect.norm = normalize(isect.pos - centre);
@@ -165,6 +165,9 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 	// initial area of micro-beam (apart from the factor of 0.5)
 	float a0 = length(cross(ray1.pos - ray.pos, ray2.pos - ray.pos));
 
+	// take into account the lambertian cosine term on the entrance plane
+	ray.tex.a *= abs(ray.dir.z);
+
 	// bounce sequence
 	ivec3 bounce = ivec3(ivec2(bounces[gid]), -1);
 	// interface index delta
@@ -219,7 +222,7 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 		if (abs(li.sr) > 0.0) {
 			
 			// swap order of refractive indices if ray going in 'reverse'
-			vec3 n = mix(li.n.xyz, li.n.zyx, bvec3(ray.dir.z > 0.0));
+			vec3 n = mix(li.n.xyz, li.n.zyx, bvec3(ray.dir.z < 0.0));
 
 			if (should_reflect) {
 				// reflection with AR coating
@@ -269,7 +272,7 @@ void main() {
 	// entrance ray
 	Ray ray;
 	ray.pos = vec3(lens_scale * pos_p, interfaces[0].z);
-	ray.dir = light_norm;
+	ray.dir = -light_norm;
 	ray.tex = vec4(vec3(0.0), 1.0);
 	// get ghost id and wavelength id from instance id
 	uint gid = uint(gl_InstanceID) / num_wavelengths;

@@ -104,7 +104,7 @@ void precompute(const string &path) {
 			li.d1 = wavelen_ar / 4.0 / li.n1;
 			// move absolute positions of already-loaded interfaces (because they're specified relatively, front to back)
 			for (auto it = interfaces.begin(); it != interfaces.end(); it++) {
-				it->z += dz_last;
+				it->z -= dz_last;
 			}
 			// update parser state
 			n_last = n;
@@ -362,7 +362,7 @@ int main(int argc, char *argv[]) {
 		if (e.key == GLFW_KEY_DOWN) rot = quatd::axisangle(vec3d::i(), -rot_angle);
 		if (e.key == GLFW_KEY_RIGHT) rot = quatd::axisangle(vec3d::j(), -rot_angle);
 		if (e.key == GLFW_KEY_LEFT) rot = quatd::axisangle(vec3d::j(), rot_angle);
-		light_norm = rot * light_norm;
+		light_norm = ~(rot * light_norm);
 
 		return false;
 	});
