@@ -117,12 +117,22 @@ void precompute(const string &path) {
 		log("LensData") << "z=" << li.z;
 	}
 	
+	// find aperture interface
+	unsigned aperture_index = 0;
+	for (unsigned i = 0; i < interfaces.size(); i++) {
+		const lens_interface &li = interfaces[i];
+		if (li.sr == 0.0 && li.ar > 0) {
+			aperture_index = i;
+		}
+	}
+
+	log("LensData") << "aperture at index " << aperture_index;
+
 	// create uniform block for lens configuration
 	// this relies on the std140 layout of the uniform block
 	vector<GLuint> lens_block_words(4 + interfaces.size() * 8);
 	lens_block_words[0] = interfaces.size();
-	// TODO properly, hard coded aperture index for now
-	lens_block_words[1] = 5;
+	lens_block_words[1] = aperture_index;
 	for (unsigned i = 0; i < interfaces.size(); i++) {
 		unsigned j = 4 + i * 8;
 		// sr, ar, z, d1
@@ -137,20 +147,36 @@ void precompute(const string &path) {
 	}
 
 	// upload lens uniform buffer
-	if (!ubo_lens) glDeleteBuffers(1, &ubo_lens);
+	if (ubo_lens) glDeleteBuffers(1, &ubo_lens);
 	glGenBuffers(1, &ubo_lens);
 	glBindBuffer(GL_UNIFORM_BUFFER, ubo_lens);
 	glBufferData(GL_UNIFORM_BUFFER, lens_block_words.size() * sizeof(GLuint), &lens_block_words[0], GL_STATIC_DRAW);
 
-	// create uniform block for bounce enumeration
-	// TODO properly, hard coded single ghost for now
-	vector<GLuint> bounce_block_words(4);
-	bounce_block_words[0] = 7;
-	bounce_block_words[1] = 0;
-	num_ghosts = 1;
+	// create uniform block for bounce enumeration (and enumerate bounces)
+	// this relies on the std140 layout of the uniform block
+	num_ghosts = 0;
+	vector<GLuint> bounce_block_words;
+	for (unsigned i = 1; i < interfaces.size(); i++) {
+		const lens_interface &li0 = interfaces[i];
+		if (math::abs(li0.sr) > 0 && li0.ar > 0) {
+			for (unsigned j = 0; j < i; j++) {
+				const lens_interface &li1 = interfaces[j];
+				if (math::abs(li1.sr) > 0 && li1.ar > 0) {
+					bounce_block_words.push_back(i);
+					bounce_block_words.push_back(j);
+					// need to pad to vec4 alignment
+					bounce_block_words.push_back(0);
+					bounce_block_words.push_back(0);
+					num_ghosts++;
+				}
+			}
+		}
+	}
 
+	log("LensData") << "enumerated " << num_ghosts << " ghosts";
+	
 	// upload bounce uniform buffer
-	if (!ubo_bounce) glDeleteBuffers(1, &ubo_bounce);
+	if (ubo_bounce) glDeleteBuffers(1, &ubo_bounce);
 	glGenBuffers(1, &ubo_bounce);
 	glBindBuffer(GL_UNIFORM_BUFFER, ubo_bounce);
 	glBufferData(GL_UNIFORM_BUFFER, bounce_block_words.size() * sizeof(GLuint), &bounce_block_words[0], GL_STATIC_DRAW);
@@ -289,7 +315,7 @@ void display(const size2i &sz) {
 	glEnable(GL_BLEND);
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
-	draw_fullscreen_grid_adjacency_border_instanced<512, 512>(1);
+	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts);
 	glDisable(GL_BLEND);
 	checkGL();
 
@@ -306,7 +332,7 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 	
-	Window *win = createWindow().size(512, 512).title("I Choose You, Flareon!").visible(true);
+	Window *win = createWindow().size(512, 512).title("I Choose You, Flareon!").visible(true).debug(true);
 	win->makeContextCurrent();
 
 	shaderman = new ShaderManager("./res/shader");

@@ -18,6 +18,9 @@
 // max number of ghosts / bounce sequences
 #define MAX_GHOSTS 200
 
+// x/y offsets for secondary rays (used for area factor calculation)
+#define SECONDARY_RAY_OFFSET 0.0001
+
 uniform mat4 proj_matrix;
 uniform float lens_scale;
 
@@ -45,7 +48,7 @@ struct LensInterface {
 struct Ray {
 	vec3 pos;
 	vec3 dir;
-	// (aperture tex coord, r_rel, intensity)
+	// (aperture tex coord, r_rel, irradiance factor)
 	vec4 tex;
 };
 
@@ -54,7 +57,7 @@ struct Intersection {
 	vec3 norm;
 	float theta;
 	bool hit;
-	bool inverted;
+	//bool inverted;
 };
 
 // lens configuration
@@ -75,7 +78,7 @@ Intersection intersect_plane(Ray ray, LensInterface li) {
 	isect.norm = vec3(0.0, 0.0, mix(1.0, -1.0, ray.dir.z > 0.0));
 	isect.theta = 0.0; // meaningless
 	isect.hit = true;
-	isect.inverted = false;
+	//isect.inverted = false;
 	return isect;
 }
 
@@ -99,7 +102,7 @@ Intersection intersect_sphere(Ray ray, LensInterface li) {
 	isect.norm *= mix(1.0, -1.0, dot(isect.norm, ray.dir) > 0.0);
 	isect.theta = acos(dot(-ray.dir, isect.norm));
 	isect.hit = true;
-	isect.inverted = t < 0.0;
+	//isect.inverted = t < 0.0;
 
 	return isect;
 }
@@ -142,6 +145,15 @@ float fresnel_ar(float theta0, float wavelen, float d1, vec3 n) {
 // main ray tracing function
 Ray trace(uint gid, Ray ray, float wavelen) {
 	
+	// trace 2 secondary rays so we can calculate the area factor
+	Ray ray1 = ray;
+	Ray ray2 = ray;
+	ray1.pos.x += SECONDARY_RAY_OFFSET;
+	ray2.pos.y += SECONDARY_RAY_OFFSET;
+
+	// initial area of micro-beam (apart from the factor of 0.5)
+	float a0 = length(cross(ray1.pos - ray.pos, ray2.pos - ray.pos));
+
 	// bounce sequence
 	ivec3 bounce = ivec3(ivec2(bounces[gid]), -1);
 	// interface index delta
@@ -163,12 +175,16 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 		stage += uint(should_reflect);
 
 		// test intersection, record aperture tex coord
-		Intersection isect;
+		Intersection isect, isect1, isect2;
 		if (abs(li.sr) > 0.0) {
 			// spherical lens
 			isect = intersect_sphere(ray, li);
+			isect1 = intersect_sphere(ray1, li);
+			isect2 = intersect_sphere(ray2, li);
 		} else {
 			isect = intersect_plane(ray, li);
+			isect1 = intersect_plane(ray1, li);
+			isect2 = intersect_plane(ray2, li);
 			// record coord if its the aperture, otherwise do nothing
 			// this can happend more than once, only the last intersection is used
 			ray.tex.xy = mix(ray.tex.xy, isect.pos.xy / li.ar, bvec2(i == int(aperture_index)));
@@ -181,9 +197,12 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 		ray.tex.z = max(ray.tex.z, mix(0.0, length(isect.pos.xy) / li.ar, li.ar > 0.0));
 
 		// update ray direction and position
-		ray.dir = normalize(isect.pos - ray.pos); // why do i need this?
-		ray.dir *= mix(1.0, -1.0, isect.inverted); // correct inverted intersection
+		//ray.dir = normalize(isect.pos - ray.pos); // why do i need this?
+		//ray.dir *= mix(1.0, -1.0, isect.inverted); // correct inverted intersection
+
 		ray.pos = isect.pos;
+		ray1.pos = isect1.pos;
+		ray2.pos = isect2.pos;
 
 		// reflection / refraction
 		if (abs(li.sr) > 0.0) {
@@ -194,20 +213,28 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 			if (should_reflect) {
 				// reflection with AR coating
 				ray.dir = reflect(ray.dir, isect.norm);
+				ray1.dir = reflect(ray1.dir, isect1.norm);
+				ray2.dir = reflect(ray2.dir, isect2.norm);
 				ray.tex.a *= fresnel_ar(isect.theta, wavelen, li.d1, n);
 			} else {
 				// refraction
 				ray.dir = refract(ray.dir, isect.norm, n.x / n.z);
+				ray1.dir = refract(ray1.dir, isect1.norm, n.x / n.z);
+				ray2.dir = refract(ray2.dir, isect2.norm, n.x / n.z);
 				// test for total internal reflection
 				if (all(equal(ray.dir, vec3(0.0)))) break;
 			}
 		}
 	}
 
-	if (i < int(num_interfaces)) {
-		// ignore early exits
-		ray.tex.a = 0.0;
-	}
+	// final area of micro-beam
+	float a1 = length(cross(ray1.pos - ray.pos, ray2.pos - ray.pos));
+
+	// apply area factor to irradiance
+	ray.tex.a *= a0 / a1;
+
+	// ignore early exits
+	ray.tex.a = mix(ray.tex.a, 0.0, i < int(num_interfaces));
 
 	return ray;
 }
@@ -228,12 +255,12 @@ void main() {
 	// id 0 is reserved for 'not a vertex', so early exit
 	if (gl_VertexID == 0) return;
 	// entrance ray
-	Ray r0;
-	r0.pos = vec3(lens_scale * pos_p, interfaces[0].z + 0.001);
-	r0.dir = normalize(vec3(0.1, 0.1, -1.0));
-	r0.tex = vec4(vec3(0.0), 1.0);
+	Ray ray;
+	ray.pos = vec3(lens_scale * pos_p, interfaces[0].z + 0.001);
+	ray.dir = normalize(vec3(0.1, 0.1, -1.0));
+	ray.tex = vec4(vec3(0.0), 1.0);
 	// TODO wavelength? light direction?
-	vertex_out.ray = trace(uint(gl_InstanceID), r0, 550e-9);
+	vertex_out.ray = trace(uint(gl_InstanceID), ray, 440e-9);
 }
 
 #endif
@@ -241,6 +268,7 @@ void main() {
 // geometry shader
 #ifdef _GEOMETRY_
 
+// probably dont need the adjacency info
 layout(triangles_adjacency) in;
 layout(triangle_strip, max_vertices = 3) out;
 
@@ -251,7 +279,7 @@ in VertexData {
 
 out VertexData {
 	noperspective vec4 tex;
-	noperspective vec3 pos;
+	noperspective vec3 dir;
 } vertex_out;
 
 void main() {
@@ -259,15 +287,15 @@ void main() {
 	Ray r2 = vertex_in[2].ray;
 	Ray r4 = vertex_in[4].ray;
 	vertex_out.tex = r0.tex;
-	vertex_out.pos = r0.pos;
+	vertex_out.dir = r0.dir;
 	gl_Position = proj_matrix * vec4(r0.pos.xy, 0.0, 1.0);
 	EmitVertex();
 	vertex_out.tex = r2.tex;
-	vertex_out.pos = r2.pos;
+	vertex_out.dir = r2.dir;
 	gl_Position = proj_matrix * vec4(r2.pos.xy, 0.0, 1.0);
 	EmitVertex();
 	vertex_out.tex = r4.tex;
-	vertex_out.pos = r4.pos;
+	vertex_out.dir = r4.dir;
 	gl_Position = proj_matrix * vec4(r4.pos.xy, 0.0, 1.0);
 	EmitVertex();
 	EndPrimitive();
@@ -280,7 +308,7 @@ void main() {
 
 in VertexData {
 	noperspective vec4 tex;
-	noperspective vec3 pos;
+	noperspective vec3 dir;
 } vertex_in;
 
 out vec4 frag_color;
@@ -288,10 +316,11 @@ out vec4 frag_color;
 void main() {
 	if (vertex_in.tex.z > 1.0) discard;
 	
-	frag_color = vec4(0.2 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
+	//frag_color = vec4(0.2 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
 	
-	//frag_color = vec4(100.0 * vertex_in.tex.a, 0.0, 0.0, 1.0);
+	frag_color = vec4(100.0 * vertex_in.tex.a, 0.0, 0.0, 1.0);
 	
+	// TODO hdr exposure
 }
 
 #endif
