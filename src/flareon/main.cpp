@@ -22,12 +22,23 @@ using namespace initial3d;
 
 ShaderManager *shaderman;
 
+vec3d light_norm = vec3d::k(-1);
+
 // uniform buffer objects for lens system and precomputed bounce sequences
 GLuint ubo_lens = 0;
 GLuint ubo_bounce = 0;
 
 // wavelength to optimize antireflective coating for
-double wavelen_ar = 500e-9;
+double wavelen_ar = 550e-9;
+
+// rgb weights and rendering wavelengths
+float wavelengths[] = {
+	1, 0, 0, 610e-9,
+	0, 1, 0, 555e-9,
+	0, 0, 1, 465e-9
+};
+
+unsigned num_wavelengths = 3;
 
 struct lens_interface {
 	// sphere radius
@@ -301,6 +312,9 @@ void display(const size2i &sz) {
 	// set other uniforms
 	glUniformMatrix4fv(glGetUniformLocation(prog_flare, "proj_matrix"), 1, true, mat4f(proj));
 	glUniform1f(glGetUniformLocation(prog_flare, "lens_scale"), interfaces[0].ar);
+	glUniform3fv(glGetUniformLocation(prog_flare, "light_norm"), 1, vec3f(light_norm));
+	glUniform1ui(glGetUniformLocation(prog_flare, "num_wavelengths"), num_wavelengths);
+	glUniform4fv(glGetUniformLocation(prog_flare, "wavelengths"), num_wavelengths, wavelengths);
 
 	checkGL();
 	
@@ -308,14 +322,13 @@ void display(const size2i &sz) {
 	//glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	
 	// instance the ghosts (batched by complexity == grid resolution)
-	// do multiple wavelengths at once
 	// blend ghosts together
 	glDisable(GL_CULL_FACE);
 	glDisable(GL_DEPTH_TEST);
 	glEnable(GL_BLEND);
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
-	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts);
+	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
 	glDisable(GL_BLEND);
 	checkGL();
 
@@ -338,6 +351,18 @@ int main(int argc, char *argv[]) {
 	shaderman = new ShaderManager("./res/shader");
 	
 	win->onResize.attach([](const window_size_event &e) {
+
+		return false;
+	});
+
+	win->onKeyPress.attach([](const key_event &e) {
+		double rot_angle = math::pi() / 180;
+		quatd rot = quatd::one();
+		if (e.key == GLFW_KEY_UP) rot = quatd::axisangle(vec3d::i(), rot_angle);
+		if (e.key == GLFW_KEY_DOWN) rot = quatd::axisangle(vec3d::i(), -rot_angle);
+		if (e.key == GLFW_KEY_RIGHT) rot = quatd::axisangle(vec3d::j(), -rot_angle);
+		if (e.key == GLFW_KEY_LEFT) rot = quatd::axisangle(vec3d::j(), rot_angle);
+		light_norm = rot * light_norm;
 
 		return false;
 	});

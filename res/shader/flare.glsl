@@ -18,11 +18,15 @@
 // max number of ghosts / bounce sequences
 #define MAX_GHOSTS 200
 
+// max number of wavelengths to render at
+#define MAX_WAVELENGTHS 8
+
 // x/y offsets for secondary rays (used for area factor calculation)
 #define SECONDARY_RAY_OFFSET 0.0001
 
 uniform mat4 proj_matrix;
 uniform float lens_scale;
+uniform vec3 light_norm;
 
 // an optical interface
 // fields are layed out for 8-float size with std140
@@ -71,6 +75,13 @@ layout(std140) uniform InterfacesBlock {
 layout(std140) uniform BouncesBlock {
 	uvec2 bounces[MAX_GHOSTS];
 };
+
+// wavelengths
+uniform uint num_wavelengths;
+// rgb: weights for RGB conversion, w: wavelength
+uniform vec4 wavelengths[MAX_WAVELENGTHS];
+
+// TODO textures
 
 Intersection intersect_plane(Ray ray, LensInterface li) {
 	Intersection isect;
@@ -133,7 +144,7 @@ float fresnel_ar(float theta0, float wavelen, float d1, vec3 n) {
 	float dy = d1 * n.y;
 	float dx = tan(theta1) * dy;
 	float delay = sqrt(dx * dx + dy * dy);
-	float rel_phase = 2.0 * PI / wavelen * (delay - dx * sin(theta0));
+	float rel_phase = 4.0 * PI / wavelen * (delay - dx * sin(theta0));
 
 	// add up sines of different phase and amplitude
 	float out_s2 = rs01 * rs01 + ris * ris + 2.0 * rs01 * ris * cos(rel_phase);
@@ -247,6 +258,7 @@ layout(location = 0) in vec2 pos_p;
 
 out VertexData {
 	flat uint id;
+	flat uint wid;
 	flat Ray ray;
 } vertex_out;
 
@@ -256,11 +268,14 @@ void main() {
 	if (gl_VertexID == 0) return;
 	// entrance ray
 	Ray ray;
-	ray.pos = vec3(lens_scale * pos_p, interfaces[0].z + 0.001);
-	ray.dir = normalize(vec3(0.1, 0.1, -1.0));
+	ray.pos = vec3(lens_scale * pos_p, interfaces[0].z);
+	ray.dir = light_norm;
 	ray.tex = vec4(vec3(0.0), 1.0);
-	// TODO wavelength? light direction?
-	vertex_out.ray = trace(uint(gl_InstanceID), ray, 440e-9);
+	// get ghost id and wavelength id from instance id
+	uint gid = uint(gl_InstanceID) / num_wavelengths;
+	vertex_out.wid = uint(gl_InstanceID) % num_wavelengths;
+	// trace!
+	vertex_out.ray = trace(gid, ray, wavelengths[vertex_out.wid].w);
 }
 
 #endif
@@ -274,28 +289,30 @@ layout(triangle_strip, max_vertices = 3) out;
 
 in VertexData {
 	flat uint id;
+	flat uint wid;
 	flat Ray ray;
 } vertex_in[];
 
 out VertexData {
 	noperspective vec4 tex;
-	noperspective vec3 dir;
+	// flat is ok, this will be constant across any instance
+	flat uint wid;
 } vertex_out;
 
 void main() {
 	Ray r0 = vertex_in[0].ray;
 	Ray r2 = vertex_in[2].ray;
 	Ray r4 = vertex_in[4].ray;
+	// set wavelength id once
+	vertex_out.wid = vertex_in[0].wid;
+	// set ray data
 	vertex_out.tex = r0.tex;
-	vertex_out.dir = r0.dir;
 	gl_Position = proj_matrix * vec4(r0.pos.xy, 0.0, 1.0);
 	EmitVertex();
 	vertex_out.tex = r2.tex;
-	vertex_out.dir = r2.dir;
 	gl_Position = proj_matrix * vec4(r2.pos.xy, 0.0, 1.0);
 	EmitVertex();
 	vertex_out.tex = r4.tex;
-	vertex_out.dir = r4.dir;
 	gl_Position = proj_matrix * vec4(r4.pos.xy, 0.0, 1.0);
 	EmitVertex();
 	EndPrimitive();
@@ -308,7 +325,7 @@ void main() {
 
 in VertexData {
 	noperspective vec4 tex;
-	noperspective vec3 dir;
+	flat uint wid;
 } vertex_in;
 
 out vec4 frag_color;
@@ -318,9 +335,9 @@ void main() {
 	
 	//frag_color = vec4(0.2 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
 	
-	frag_color = vec4(100.0 * vertex_in.tex.a, 0.0, 0.0, 1.0);
+	frag_color = vec4(100.0 * vertex_in.tex.a * wavelengths[vertex_in.wid].rgb, 1.0);
 	
-	// TODO hdr exposure
+	// TODO hdr exposure - needs second pass!
 }
 
 #endif
