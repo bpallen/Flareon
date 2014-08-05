@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 #include "Initial3D.hpp"
 #include "Flareon.hpp"
@@ -24,9 +25,15 @@ ShaderManager *shaderman;
 
 vec3d light_norm = vec3d::k(-1);
 
+double exposure = 1.0;
+
 // uniform buffer objects for lens system and precomputed bounce sequences
 GLuint ubo_lens = 0;
 GLuint ubo_bounce = 0;
+
+// framebuffer and textures for deferred hdr
+GLuint fbo_hdr;
+GLuint tex_hdr;
 
 // wavelength to optimize antireflective coating for
 double wavelen_ar = 550e-9;
@@ -197,6 +204,46 @@ void precompute(const string &path) {
 	
 }
 
+void init_fbo_hdr(const size2i &size) {
+	
+	if (fbo_hdr) glDeleteFramebuffers(1, &fbo_hdr);
+	glGenFramebuffers(1, &fbo_hdr);
+	
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo_hdr);
+	
+	if (tex_hdr) glDeleteTextures(1, &tex_hdr);
+	glGenTextures(1, &tex_hdr);
+	
+	glActiveTexture(GL_TEXTURE0);
+	
+	glBindTexture(GL_TEXTURE_2D, tex_hdr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.w, size.h, 0, GL_RGBA, GL_FLOAT, nullptr);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_hdr, 0);
+	checkGL();
+	
+	GLenum bufs[] = { GL_COLOR_ATTACHMENT0 };
+	glDrawBuffers(1, bufs);
+	
+	checkFB();
+
+	glBindTexture(GL_TEXTURE_2D, 0);
+	
+}
+
+void draw_fullscreen() {
+	static GLuint vao = 0;
+	if (vao == 0) {
+		glGenVertexArrays(1, &vao);
+	}
+	glBindVertexArray(vao);
+	glDrawArrays(GL_POINTS, 0, 1);
+	glBindVertexArray(0);
+}
+
 // width and height are in terms of on-screen triangles
 template <unsigned Width, unsigned Height>
 void draw_fullscreen_grid_adjacency_border_instanced(unsigned instances) {
@@ -287,17 +334,20 @@ void draw_fullscreen_grid_adjacency_border_instanced(unsigned instances) {
 	glBindVertexArray(0);
 }
 
-void display(const size2i &sz) {
+void display(const size2i &size) {
+	if (size.w < 1 || size.h < 1) return;
 
 	// height of the sensor
 	// temp - set to fraction of diameter of first interface's aperture
 	double sensor_h = interfaces[0].ar * 2;
 
 	// orthographic projection, just to scale things properly
-	mat4d proj = mat4d::scale(double(sz.h) / double(sz.w), 1.0, 1.0) * mat4d::scale(2.0 / sensor_h);
+	mat4d proj = mat4d::scale(double(size.h) / double(size.w), 1.0, 1.0) * mat4d::scale(2.0 / sensor_h);
 
-	glViewport(0, 0, sz.w, sz.h);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	// composite as HDR
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo_hdr);
+	glViewport(0, 0, size.w, size.h);
+	glClear(GL_COLOR_BUFFER_BIT);
 
 	GLuint prog_flare = shaderman->getProgram("flare.glsl");
 
@@ -331,8 +381,26 @@ void display(const size2i &sz) {
 	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
 	glDisable(GL_BLEND);
 	checkGL();
-
-	glUseProgram(0);
+	
+	glFinish();
+	
+	// apply HDR tonemap
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glViewport(0, 0, size.w, size.h);
+	
+	GLuint prog_hdr = shaderman->getProgram("hdr.glsl");
+	
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, tex_hdr);
+	
+	glUseProgram(prog_hdr);
+	
+	glUniform1i(glGetUniformLocation(prog_hdr, "sampler_hdr"), 0);
+	glUniform1f(glGetUniformLocation(prog_hdr, "exposure"), exposure);
+	
+	draw_fullscreen();
+	
+	checkGL();
 
 	glFinish();
 
@@ -351,7 +419,9 @@ int main(int argc, char *argv[]) {
 	shaderman = new ShaderManager("./res/shader");
 	
 	win->onResize.attach([](const window_size_event &e) {
-
+		if (e.size.w > 0 && e.size.h > 0) {
+			init_fbo_hdr(e.size);
+		}
 		return false;
 	});
 
@@ -364,6 +434,9 @@ int main(int argc, char *argv[]) {
 		if (e.key == GLFW_KEY_LEFT) rot = quatd::axisangle(vec3d::j(), rot_angle);
 		light_norm = ~(rot * light_norm);
 
+		if (e.key == GLFW_KEY_EQUAL) exposure *= 1.2;
+		if (e.key == GLFW_KEY_MINUS) exposure /= 1.2;
+
 		return false;
 	});
 
@@ -372,6 +445,8 @@ int main(int argc, char *argv[]) {
 	
 	auto time_fps = chrono::steady_clock::now();
 	unsigned fps = 0;
+	
+	init_fbo_hdr(win->size());
 	
 	while (!win->shouldClose()) {
 		auto now = chrono::steady_clock::now();

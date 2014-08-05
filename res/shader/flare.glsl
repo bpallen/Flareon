@@ -250,6 +250,9 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 	// ignore early exits
 	ray.tex.a = mix(ray.tex.a, 0.0, i < int(num_interfaces));
 
+	// ignore nans
+	ray.tex.a = mix(ray.tex.a, 0.0, isnan(ray.tex.a));
+
 	return ray;
 }
 
@@ -338,9 +341,9 @@ void main() {
 	
 	//frag_color = vec4(0.2 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
 	
-	frag_color = vec4(100.0 * vertex_in.tex.a * wavelengths[vertex_in.wid].rgb, 1.0);
+	frag_color = vec4(1000.0 * vertex_in.tex.a * wavelengths[vertex_in.wid].rgb, 1.0);
 	
-	// TODO hdr exposure - needs second pass!
+	// TODO sensible irradiance ?
 }
 
 #endif
