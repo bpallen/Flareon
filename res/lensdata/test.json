@@ -1,0 +1,35 @@
+{
+	"materials" : {
+		"glass_bak1" : {
+			"n" : {
+				"wavelengths" : [ ... ],
+				"values" : [ ...  ]
+			}
+		}
+	},
+	"coatings" : {
+		"coating1" : {
+			"wavelength" : 550e-9
+		}
+	},
+	"interfaces" : [
+		{
+			"sphere_radius" : 29.475e-3,
+			"aperture_radius" : 12.6e-3,
+			"coating" : "coating1",
+			"next_material" : "glass_bak1",
+			"next_position" : 3.76e-3
+		},
+		{
+			"sphere_radius" : 84.83e-3,
+			"aperture_radius" : 12.6e-3,
+			"coating" : "coating1",
+			"next_material" : null,
+			"next_position" : 0.12e-3
+		},
+		...
+	],
+	"aperture_index" : 5
+}
+	
+	
