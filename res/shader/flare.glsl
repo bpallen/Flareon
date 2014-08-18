@@ -27,6 +27,7 @@
 uniform mat4 proj_matrix;
 uniform float lens_scale;
 uniform vec3 light_norm;
+uniform uint num_quads;
 
 // an optical interface
 // fields are layed out for 8-float size with std140
@@ -52,6 +53,8 @@ struct LensInterface {
 struct Ray {
 	vec3 pos;
 	vec3 dir;
+	// entrance plane area : sensor plane area
+	float area_factor;
 	// (aperture tex coord, r_rel, irradiance factor)
 	vec4 tex;
 };
@@ -200,7 +203,7 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 			isect1 = intersect_plane(ray1, li);
 			isect2 = intersect_plane(ray2, li);
 			// record coord if its the aperture, otherwise do nothing
-			// this can happend more than once, only the last intersection is used
+			// if this happens more than once, only the last intersection is used
 			ray.tex.xy = mix(ray.tex.xy, isect.pos.xy / li.ar, bvec2(i == int(aperture_index)));
 		}
 
@@ -224,12 +227,17 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 			// swap order of refractive indices if ray going in 'reverse'
 			vec3 n = mix(li.n.xyz, li.n.zyx, bvec3(ray.dir.z < 0.0));
 
+			// TODO temporary hack for wavelength-dependent refractive index
+			n.xz -= (wavelen - 400e-9) * 1.6e5;
+
 			if (should_reflect) {
 				// reflection with AR coating
 				ray.dir = reflect(ray.dir, isect.norm);
 				ray1.dir = reflect(ray1.dir, isect1.norm);
 				ray2.dir = reflect(ray2.dir, isect2.norm);
-				ray.tex.a *= fresnel_ar(isect.theta, wavelen, li.d1, n);
+				float a = fresnel_ar(isect.theta, wavelen, li.d1, n);
+				a = mix(a, 0.0, isnan(a) || isinf(a));
+				ray.tex.a *= a;
 			} else {
 				// refraction
 				ray.dir = refract(ray.dir, isect.norm, n.x / n.z);
@@ -244,14 +252,15 @@ Ray trace(uint gid, Ray ray, float wavelen) {
 	// final area of micro-beam
 	float a1 = length(cross(ray1.pos - ray.pos, ray2.pos - ray.pos));
 
-	// apply area factor to irradiance
-	ray.tex.a *= a0 / a1;
+	// area factor
+	// a1 can contain nans (untested TIR i guess)
+	ray.area_factor = mix(a0 / a1, 0.0, isnan(a1));
 
 	// ignore early exits
 	ray.tex.a = mix(ray.tex.a, 0.0, i < int(num_interfaces));
 
 	// ignore nans
-	ray.tex.a = mix(ray.tex.a, 0.0, isnan(ray.tex.a));
+	//ray.tex.a = mix(ray.tex.a, 0.0, isnan(ray.tex.a));
 
 	return ray;
 }
@@ -309,6 +318,23 @@ void main() {
 	Ray r0 = vertex_in[0].ray;
 	Ray r2 = vertex_in[2].ray;
 	Ray r4 = vertex_in[4].ray;
+
+	// area factor for real triangle
+	float a0 = 4.0 * lens_scale * lens_scale / float(num_quads);
+	float a1 = length(cross(r2.pos - r0.pos, r4.pos - r0.pos));
+	float af = mix(a0 / a1, 0.0, isnan(a1));
+
+	// average area factor from rays
+	float aaf = (r0.area_factor + r2.area_factor + r4.area_factor) / 3.0;
+
+	// speculative correction
+	// TODO idk
+	float maf = mix(9001.0, af, aaf > 2.0 * af);
+
+	r0.tex.a *= min(r0.area_factor, maf);
+	r2.tex.a *= min(r2.area_factor, maf);
+	r4.tex.a *= min(r4.area_factor, maf);
+
 	// set wavelength id once
 	vertex_out.wid = vertex_in[0].wid;
 	// set ray data

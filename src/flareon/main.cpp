@@ -378,6 +378,7 @@ void display(const size2i &size) {
 	glEnable(GL_BLEND);
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
+	glUniform1ui(glGetUniformLocation(prog_flare, "num_quads"), 64 * 64);
 	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
 	glDisable(GL_BLEND);
 	checkGL();
