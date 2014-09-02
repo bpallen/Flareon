@@ -255,7 +255,7 @@ void load_rgb_sensitivities() {
 
 void make_textures() {
 	
-	static const unsigned tex_size = 512;
+	static const unsigned tex_size = 1024;
 	
 	load_rgb_sensitivities();
 

@@ -55,11 +55,15 @@ void main() {
 
 out vec4 frag_color;
 
+float rand(vec2 seed) {
+	return fract(sin(dot(seed + 0.317, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
 void main() {
 	
-	float junk = fract(sin(dot(gl_FragCoord.xy + 0.337, vec2(12.9898, 78.233))) * 43758.5453);
+	float junk = rand(gl_FragCoord.xy);
 	
-	frag_color = vec4(1.0 - 0.1 * junk);
+	frag_color = vec4(mix(1.0, 1.0 - junk, junk > 0.98));
 }
 
 #endif

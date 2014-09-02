@@ -30,17 +30,17 @@ out vec4 frag_color;
 
 void main() {
 	
-	// wavlength for base fourier image
+	// wavelength for base fourier image
 	const float w0 = 575e-9;
 
-	const uint samples = 69u;
+	const uint samples = 200u;
 
 	vec3 f = vec3(0.0);
 
 	vec3 rgb_t = vec3(0.0);
 
 	for (uint i = 0u; i < samples; i++) {
-		float wi = wavelen_min + float(i) / float(samples) * (wavelen_max - wavelen_min);
+		float wi = wavelen_min + (float(i) + 0.5) / float(samples) * (wavelen_max - wavelen_min);
 		float scale = w0 / wi;
 		float a = texture(sampler_fourier, clamp((texCoord - 0.5) * scale, -0.5, 0.5)).r;
 		rgb_t += rgb(wi);
