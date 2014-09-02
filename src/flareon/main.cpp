@@ -103,7 +103,7 @@ void draw_aperture() {
 	GLuint prog_ap = shaderman->getProgram("aperture.glsl");
 	glUseProgram(prog_ap);
 	glUniform1ui(glGetUniformLocation(prog_ap, "sides"), 8);
-	glUniform1f(glGetUniformLocation(prog_ap, "radius"), 0.8);
+	glUniform1f(glGetUniformLocation(prog_ap, "radius"), 0.5);
 	draw_fullscreen();
 }
 
@@ -705,7 +705,7 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 	
-	Window *win = createWindow().size(512, 512).title("I Choose You, Flareon!").visible(true).debug(true);
+	Window *win = createWindow().size(1024, 1024).title("I Choose You, Flareon!").visible(true).debug(true);
 	win->makeContextCurrent();
 
 	shaderman = new ShaderManager("./res/shader");

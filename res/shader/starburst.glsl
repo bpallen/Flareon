@@ -47,7 +47,7 @@ void main() {
 		f += rgb(wi) * a * a;
 	}
 
-	f /= float(samples);
+	// f /= float(samples);
 	f /= rgb_t;
 
 	frag_color = vec4(f * exposure, 1.0);
