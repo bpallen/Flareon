@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cassert>
 
 #include <iostream>
 #include <chrono>
@@ -10,12 +11,17 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <memory>
+#include <complex>
+
+#include <GFFT/GFFT.h>
 
 #include "Initial3D.hpp"
 #include "Flareon.hpp"
 #include "Log.hpp"
 #include "Window.hpp"
 #include "Shader.hpp"
+#include "Chrono.hpp"
 
 using namespace std;
 using namespace ambition;
@@ -31,9 +37,13 @@ double exposure = 1.0;
 GLuint ubo_lens = 0;
 GLuint ubo_bounce = 0;
 
+// RGB wavelength sensitivities
+GLuint tex_rgb = 0;
+double wavelen_min = 9001, wavelen_max = 0;
+
 // framebuffer and textures for deferred hdr
-GLuint fbo_hdr;
-GLuint tex_hdr;
+GLuint fbo_hdr = 0;
+GLuint tex_hdr = 0;
 
 // framebuffer and textures for aperture texture synthesis
 GLuint fbo_ap = 0;
@@ -89,17 +99,169 @@ void draw_fullscreen() {
 	glBindVertexArray(0);
 }
 
+void draw_aperture() {
+	GLuint prog_ap = shaderman->getProgram("aperture.glsl");
+	glUseProgram(prog_ap);
+	glUniform1ui(glGetUniformLocation(prog_ap, "sides"), 8);
+	glUniform1f(glGetUniformLocation(prog_ap, "radius"), 0.8);
+	draw_fullscreen();
+}
+
+void draw_fourier(GLuint tex) {
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, tex);
+
+	GLuint prog = shaderman->getProgram("showfourier.glsl");
+	glUseProgram(prog);
+
+	glUniform1f(glGetUniformLocation(prog, "exposure"), exposure);
+	glUniform1i(glGetUniformLocation(prog, "sampler_fourier"), 0);
+
+	draw_fullscreen();
+
+}
+
+void draw_starburst() {
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, tex_ap_fft);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_1D, tex_rgb);
+
+	GLuint prog = shaderman->getProgram("starburst.glsl");
+	glUseProgram(prog);
+
+	glUniform1f(glGetUniformLocation(prog, "exposure"), exposure);
+	glUniform1i(glGetUniformLocation(prog, "sampler_fourier"), 0);
+	glUniform1i(glGetUniformLocation(prog, "sampler_rgb"), 1);
+	glUniform1f(glGetUniformLocation(prog, "wavelen_min"), wavelen_min);
+	glUniform1f(glGetUniformLocation(prog, "wavelen_max"), wavelen_max);
+
+	draw_fullscreen();
+
+}
+
+// in-place transpose (square)
+// input data is interleaved real and imaginary parts (ie 2 elements per sample)
+void transpose(unsigned size, double *data) {
+	for (unsigned i = 0; i < size; i++) {
+		for (unsigned j = i + 1; j < size; j++) {
+			unsigned k0 = 2 * size * i + 2 * j;
+			unsigned k1 = 2 * size * j + 2 * i;
+			swap(data[k0 + 0], data[k1 + 0]);
+			swap(data[k0 + 1], data[k1 + 1]);
+		}
+	}
+}
+
+// in-place 1D FFT on multiple datasets (residing sequentially in memory)
+// input data is interleaved real and imaginary parts (ie 2 elements per sample)
+// result will need 'fftshifting'
+void fft(unsigned size, unsigned count, double *data) {
+	using namespace gfft;
+
+	assert((size & (size - 1)) == 0 && "FFT: size must be a non-zero power of two");
+
+	// initialization of the object factory
+	Loki::Factory<AbstractFFT<double>,unsigned int> gfft_factory;
+	FactoryInit<GFFTList<GFFT, 1, 27>::Result>::apply(gfft_factory);
+
+	// power-of-two for data length
+	unsigned p = 0;
+	// assume size >= 1 (guaranteed by the above assertion)
+	for (unsigned i = size >> 1; i > 0; ) {
+		i >>= 1;
+		p++;
+	}
+
+	// create an instance of the GFFT
+	auto gfft = unique_ptr<AbstractFFT<double>>(gfft_factory.CreateObject(p));
+
+	// run the FFTs
+	for (unsigned i = 0; i < count; i++) {
+		gfft->fft(data + 2 * size * i);
+	}
+
+}
+
+// in-place 2D FFT (square)
+// input data is interleaved real and imaginary parts (ie 2 elements per sample)
 void fft2(unsigned size, double *data) {
-	// TODO
+
+	auto time0 = really_high_resolution_clock::now();
+
+	// use seperability for 2D
+	fft(size, size, data);
+	transpose(size, data);
+	fft(size, size, data);
+	transpose(size, data);
+
+	double dt = chrono::duration_cast<chrono::duration<double>>(really_high_resolution_clock::now() - time0).count();
+
+	log("FFT2") << "size=" << size << ", took " << dt << "s";
+}
+
+void load_rgb_sensitivities() {
+
+	if (tex_rgb) return;
+
+	// parse file
+	vector<float> rgb;
+	ifstream ifs("./res/cones.txt");
+	if (!ifs.good()) {
+		throw runtime_error("unable to open file 'cones.txt'");
+	}
+	while (ifs.good()) {
+		string line;
+		getline(ifs, line);
+		istringstream iss(line);
+		string tok0;
+		iss >> tok0;
+		if (iss.fail()) continue;
+		if (tok0[0] == '#') continue;
+		iss.seekg(0);
+		double wl, r, g, b;
+		iss >> wl >> r >> g >> b;
+		if (iss.fail()) {
+			log("RGB").warning() << "Encountered invalid line '" << line << "'";
+		} else {
+			wl *= 1e-9;
+			r = math::pow(10.0, r);
+			g = math::pow(10.0, g);
+			b = math::pow(10.0, b);
+			wavelen_min = math::min(wavelen_min, wl);
+			wavelen_max = math::max(wavelen_max, wl);
+			// lines are assumed to be in increasing order of equally-spaced-wavelengths
+			rgb.push_back(r);
+			rgb.push_back(g);
+			rgb.push_back(b);
+			rgb.push_back(0);
+		}
+	}
+
+	log("RGB") << "Read " << (rgb.size() / 4) << " sensitivity entries";
+	log("RGB") << "Min wavelength: " << wavelen_min;
+	log("RGB") << "Max wavelength: " << wavelen_max;
+
+	glGenTextures(1, &tex_rgb);
+	glBindTexture(GL_TEXTURE_1D, tex_rgb);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA16F, rgb.size() / 4, 0, GL_RGBA, GL_FLOAT, &rgb[0]);
+
 }
 
 void make_textures() {
 	
 	static const unsigned tex_size = 512;
 	
+	load_rgb_sensitivities();
+
 	if (!fbo_ap) glGenFramebuffers(1, &fbo_ap);
 	glBindFramebuffer(GL_FRAMEBUFFER, fbo_ap);
-	
+
 	if (!tex_ap) {
 		glGenTextures(1, &tex_ap);
 		glBindTexture(GL_TEXTURE_2D, tex_ap);
@@ -113,28 +275,26 @@ void make_textures() {
 	if (!tex_ap_fft) {
 		glGenTextures(1, &tex_ap_fft);
 		glBindTexture(GL_TEXTURE_2D, tex_ap_fft);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 	}
 	
 	if (!tex_ap_frft) {
 		glGenTextures(1, &tex_ap_frft);
 		glBindTexture(GL_TEXTURE_2D, tex_ap_frft);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 	}
 	
 	if (!tex_star) {
 		glGenTextures(1, &tex_star);
 		glBindTexture(GL_TEXTURE_2D, tex_star);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
@@ -143,8 +303,8 @@ void make_textures() {
 	if (!tex_ghost) {
 		glGenTextures(1, &tex_ghost);
 		glBindTexture(GL_TEXTURE_2D, tex_ghost);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
@@ -155,36 +315,48 @@ void make_textures() {
 	glDrawBuffer(GL_COLOR_ATTACHMENT0);
 	glViewport(0, 0, tex_size, tex_size);
 	glClear(GL_COLOR_BUFFER_BIT);
-	GLuint prog_ap = shaderman->getProgram("aperture.glsl");
-	glUseProgram(prog_ap);
-	glUniform1ui(glGetUniformLocation(prog_ap, "sides"), 8);
-	glUniform1f(glGetUniformLocation(prog_ap, "radius"), 0.8);
-	draw_fullscreen();
+	draw_aperture();
+	checkGL();
 	
 	// read back aperture
 	vector<float> ap_raw(tex_size * tex_size);
 	glReadBuffer(GL_COLOR_ATTACHMENT0);
 	glReadPixels(0, 0, tex_size, tex_size, GL_RED, GL_FLOAT, &ap_raw[0]);
 	
-	// FFT
-	vector<double> ap_fft_temp(2 * tex_size * tex_size);
+	// unpack aperture for FFT
+	vector<double> ap_temp(2 * tex_size * tex_size);
 	for (unsigned i = 0; i < ap_raw.size(); i++) {
 		// flattened complex numbers
-		ap_fft_temp[2 * i + 0] = ap_raw[i];
-		ap_fft_temp[2 * i + 1] = 0;
+		ap_temp[2 * i + 0] = ap_raw[i];
+		ap_temp[2 * i + 1] = 0;
 	}
-	fft2(tex_size, &ap_fft_temp[0]);
+
+	// FFT
+	fft2(tex_size, &ap_temp[0]);
 	
-	// load aperture FFT texture
-	// TODO teximage2d can upload GL_RG
-	vector<float> ap_fft(4 * tex_size * tex_size);
+	// repack aperture FFT
+	vector<float> ap_fft(2 * tex_size * tex_size);
 	for (unsigned i = 0; i < ap_raw.size(); i++) {
-		// flattened complex numbers, padded to RGBA
-		ap_fft[4 * i + 0] = ap_fft_temp[2 * i + 0];
-		ap_fft[4 * i + 1] = ap_fft_temp[2 * i + 1];
+		// flattened complex numbers - as amplitude and phase
+		// this interpolates a lot better than real/imag
+		auto z = complex<double>(ap_temp[2 * i + 0], ap_temp[2 * i + 1]);
+		ap_fft[2 * i + 0] = abs(z);
+		ap_fft[2 * i + 1] = arg(z);
 	}
-	// TODO
+
+	// upload aperture FFT texture
+	glBindTexture(GL_TEXTURE_2D, tex_ap_fft);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, tex_size, tex_size, 0, GL_RG, GL_FLOAT, &ap_fft[0]);
+	glGenerateMipmap(GL_TEXTURE_2D);
+	checkGL();
 	
+	// draw the starburst texture
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_star, 0);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	glViewport(0, 0, tex_size, tex_size);
+	glClear(GL_COLOR_BUFFER_BIT);
+	// TODO
+
 	// cleanup
 	glUseProgram(0);
 	glBindTexture(GL_TEXTURE_2D, 0);
@@ -494,7 +666,7 @@ void display(const size2i &size) {
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
 	glUniform1ui(glGetUniformLocation(prog_flare, "num_quads"), 64 * 64);
-	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
+	//draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
 	glDisable(GL_BLEND);
 	checkGL();
 	
@@ -514,8 +686,12 @@ void display(const size2i &size) {
 	glUniform1i(glGetUniformLocation(prog_hdr, "sampler_hdr"), 0);
 	glUniform1f(glGetUniformLocation(prog_hdr, "exposure"), exposure);
 	
-	draw_fullscreen();
+	//draw_fullscreen();
 	
+	draw_starburst();
+	//draw_aperture();
+	//draw_fourier(tex_ap_fft);
+
 	checkGL();
 
 	glFinish();
