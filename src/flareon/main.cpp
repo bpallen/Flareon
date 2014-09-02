@@ -35,6 +35,14 @@ GLuint ubo_bounce = 0;
 GLuint fbo_hdr;
 GLuint tex_hdr;
 
+// framebuffer and textures for aperture texture synthesis
+GLuint fbo_ap = 0;
+GLuint tex_ap = 0;
+GLuint tex_ap_fft = 0;
+GLuint tex_ap_frft = 0;
+GLuint tex_star = 0;
+GLuint tex_ghost = 0;
+
 // wavelength to optimize antireflective coating for
 double wavelen_ar = 550e-9;
 
@@ -69,6 +77,120 @@ struct lens_interface {
 // lens interfaces, in order from entry to sensor
 vector<lens_interface> interfaces;
 unsigned num_ghosts = 0;
+
+
+void draw_fullscreen() {
+	static GLuint vao = 0;
+	if (vao == 0) {
+		glGenVertexArrays(1, &vao);
+	}
+	glBindVertexArray(vao);
+	glDrawArrays(GL_POINTS, 0, 1);
+	glBindVertexArray(0);
+}
+
+void fft2(unsigned size, double *data) {
+	// TODO
+}
+
+void make_textures() {
+	
+	static const unsigned tex_size = 512;
+	
+	if (!fbo_ap) glGenFramebuffers(1, &fbo_ap);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo_ap);
+	
+	if (!tex_ap) {
+		glGenTextures(1, &tex_ap);
+		glBindTexture(GL_TEXTURE_2D, tex_ap);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
+	}
+	
+	if (!tex_ap_fft) {
+		glGenTextures(1, &tex_ap_fft);
+		glBindTexture(GL_TEXTURE_2D, tex_ap_fft);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
+	}
+	
+	if (!tex_ap_frft) {
+		glGenTextures(1, &tex_ap_frft);
+		glBindTexture(GL_TEXTURE_2D, tex_ap_frft);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
+	}
+	
+	if (!tex_star) {
+		glGenTextures(1, &tex_star);
+		glBindTexture(GL_TEXTURE_2D, tex_star);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
+	}
+	
+	if (!tex_ghost) {
+		glGenTextures(1, &tex_ghost);
+		glBindTexture(GL_TEXTURE_2D, tex_ghost);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
+	}
+	
+	// draw the aperture transmission function
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_ap, 0);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	glViewport(0, 0, tex_size, tex_size);
+	glClear(GL_COLOR_BUFFER_BIT);
+	GLuint prog_ap = shaderman->getProgram("aperture.glsl");
+	glUseProgram(prog_ap);
+	glUniform1ui(glGetUniformLocation(prog_ap, "sides"), 8);
+	glUniform1f(glGetUniformLocation(prog_ap, "radius"), 0.8);
+	draw_fullscreen();
+	
+	// read back aperture
+	vector<float> ap_raw(tex_size * tex_size);
+	glReadBuffer(GL_COLOR_ATTACHMENT0);
+	glReadPixels(0, 0, tex_size, tex_size, GL_RED, GL_FLOAT, &ap_raw[0]);
+	
+	// FFT
+	vector<double> ap_fft_temp(2 * tex_size * tex_size);
+	for (unsigned i = 0; i < ap_raw.size(); i++) {
+		// flattened complex numbers
+		ap_fft_temp[2 * i + 0] = ap_raw[i];
+		ap_fft_temp[2 * i + 1] = 0;
+	}
+	fft2(tex_size, &ap_fft_temp[0]);
+	
+	// load aperture FFT texture
+	// TODO teximage2d can upload GL_RG
+	vector<float> ap_fft(4 * tex_size * tex_size);
+	for (unsigned i = 0; i < ap_raw.size(); i++) {
+		// flattened complex numbers, padded to RGBA
+		ap_fft[4 * i + 0] = ap_fft_temp[2 * i + 0];
+		ap_fft[4 * i + 1] = ap_fft_temp[2 * i + 1];
+	}
+	// TODO
+	
+	// cleanup
+	glUseProgram(0);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	
+}
 
 void precompute(const string &path) {
 	// parse the lens specification file
@@ -202,6 +324,9 @@ void precompute(const string &path) {
 	// cleanup
 	glBindBuffer(GL_UNIFORM_BUFFER, 0);
 	
+	// texture synthesis
+	make_textures();
+	
 }
 
 void init_fbo_hdr(const size2i &size) {
@@ -232,16 +357,6 @@ void init_fbo_hdr(const size2i &size) {
 
 	glBindTexture(GL_TEXTURE_2D, 0);
 	
-}
-
-void draw_fullscreen() {
-	static GLuint vao = 0;
-	if (vao == 0) {
-		glGenVertexArrays(1, &vao);
-	}
-	glBindVertexArray(vao);
-	glDrawArrays(GL_POINTS, 0, 1);
-	glBindVertexArray(0);
 }
 
 // width and height are in terms of on-screen triangles

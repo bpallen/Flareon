@@ -19,6 +19,10 @@ include_directories("${FLAREON_SOURCE_DIR}/ext/glfw-3.0.3/include")
 add_subdirectory("${FLAREON_SOURCE_DIR}/ext/glew-1.10.0" "${FLAREON_BINARY_DIR}/ext/glew")
 include_directories("${FLAREON_SOURCE_DIR}/ext/glew-1.10.0/include")
 
+# GFFT
+add_subdirectory("${FLAREON_SOURCE_DIR}/ext/gfft" "${FLAREON_BINARY_DIR}/ext/gfft")
+include_directories("${FLAREON_SOURCE_DIR}/ext/gfft/include")
+
 # compiler flags 
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
 	# Force to always compile with W4
