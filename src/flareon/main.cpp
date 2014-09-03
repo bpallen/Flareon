@@ -297,7 +297,8 @@ void make_textures() {
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
+		// TODO 32f for the moment
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
 	}
 	
 	if (!tex_ghost) {
@@ -355,9 +356,19 @@ void make_textures() {
 	glDrawBuffer(GL_COLOR_ATTACHMENT0);
 	glViewport(0, 0, tex_size, tex_size);
 	glClear(GL_COLOR_BUFFER_BIT);
-	// TODO
-
+	// TODO cleaner...
+	exposure = 1.0;
+	draw_starburst();
+	checkGL();
+	vector<float> star_temp(4 * tex_size * tex_size);
+	glReadBuffer(GL_COLOR_ATTACHMENT0);
+	glReadPixels(0, 0, tex_size, tex_size, GL_RGBA, GL_FLOAT, &star_temp[0]);
+	
+	// TODO save to exr for andrew
+	
 	// cleanup
+	checkGL();
+	glFinish();
 	glUseProgram(0);
 	glBindTexture(GL_TEXTURE_2D, 0);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);

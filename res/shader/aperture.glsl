@@ -63,7 +63,7 @@ void main() {
 	
 	// this produces fairly random (though somewhat grid-aligned) smoothed circular points
 	
-	float spot = 25.0;
+	float spot = 20.0;
 	
 	vec2 fc0 = floor(gl_FragCoord.xy / spot);
 	vec2 fc1 = fc0 * spot + spot * 0.5 + 0.5;
@@ -74,7 +74,7 @@ void main() {
 	
 	float d = distance(fc1, gl_FragCoord.xy);
 	
-	frag_color = vec4(mix(1.0, 1.0 - exp(-(2.0 / spot) * pow(d / spot * 5.0, spot / 2.0)), junk > 0.9));
+	frag_color = vec4(mix(1.0, 1.0 - 0.9 * exp(-(2.0 / spot) * pow(d / spot * 5.0, spot / 2.0)), junk > 0.87));
 }
 
 #endif
