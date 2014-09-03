@@ -363,8 +363,21 @@ void make_textures() {
 	vector<float> star_temp(4 * tex_size * tex_size);
 	glReadBuffer(GL_COLOR_ATTACHMENT0);
 	glReadPixels(0, 0, tex_size, tex_size, GL_RGBA, GL_FLOAT, &star_temp[0]);
-	
-	// TODO save to exr for andrew
+
+#ifdef NOT_DEFINED
+	// export starburst texture in plaintext
+	{
+		ofstream ofs("./starburst.txt");
+		ofs << tex_size << " " << tex_size << " " << "RGBA" << endl;
+		for (unsigned i = 0; i < tex_size; i++) {
+			for (unsigned j = 0; j < tex_size; j++) {
+				unsigned k0 = i * tex_size * 4 + j * 4;
+				ofs << star_temp[k0] << " " << star_temp[k0 + 1] << " " << star_temp[k0 + 2] << " " << star_temp[k0 + 3] << " ";
+			}
+			ofs << endl;
+		}
+	}
+#endif
 	
 	// cleanup
 	checkGL();
