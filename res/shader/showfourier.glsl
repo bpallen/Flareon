@@ -16,9 +16,9 @@ vec3 hdr(vec3 e) {
 
 void main() {
 	
-	vec2 c = texture(sampler_fourier, texCoord + 0.5).rg;
+	float a = texture(sampler_fourier, texCoord + 0.5).r;
 
-	float p = c.x * c.x;
+	float p = a * a;
 
 	// display hdr'd power spectrum
 	frag_color = vec4(hdr(vec3(p)), 1.0);

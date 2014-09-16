@@ -27,6 +27,8 @@ using namespace std;
 using namespace ambition;
 using namespace initial3d;
 
+using complexd = std::complex<double>;
+
 ShaderManager *shaderman;
 
 vec3d light_norm = vec3d::k(-1);
@@ -88,15 +90,64 @@ struct lens_interface {
 vector<lens_interface> interfaces;
 unsigned num_ghosts = 0;
 
+// texture for plot data
+GLuint tex_plot = 0;
+unsigned plot_size;
+float plot_min, plot_max;
 
-void draw_fullscreen() {
+void draw_fullscreen(unsigned instances = 1) {
 	static GLuint vao = 0;
 	if (vao == 0) {
 		glGenVertexArrays(1, &vao);
 	}
 	glBindVertexArray(vao);
-	glDrawArrays(GL_POINTS, 0, 1);
+	glDrawArraysInstanced(GL_POINTS, 0, 1, instances);
 	glBindVertexArray(0);
+}
+
+void preplot(unsigned size, const complexd *data) {
+	vector<float> dataf(size);
+	for (unsigned i = 0; i < size; i++) {
+		dataf[i] = data[i].real();
+	}
+
+	plot_size = size;
+
+	plot_min = dataf[0];
+	plot_max = plot_min;
+	for (unsigned i = 0; i < size; i++) {
+		plot_min = math::min(plot_min, dataf[i]);
+		plot_max = math::max(plot_max, dataf[i]);
+	}
+
+	plot_min -= 0.1 * abs(plot_max - plot_min) + 1e-3;
+	plot_max += 0.1 * abs(plot_max - plot_min) + 1e-3;
+
+	log("plot") << "min: " << plot_min;
+	log("plot") << "max: " << plot_max;
+
+	if (tex_plot) glDeleteTextures(1, &tex_plot);
+	glGenTextures(1, &tex_plot);
+	glBindTexture(GL_TEXTURE_1D, tex_plot);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexImage1D(GL_TEXTURE_1D, 0, GL_R32F, size, 0, GL_RED, GL_FLOAT, &dataf[0]);
+
+	glBindTexture(GL_TEXTURE_1D, 0);
+}
+
+void plot() {
+	glClearColor(1, 1, 1, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	GLuint prog = shaderman->getProgram("plot.glsl");
+	glUseProgram(prog);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_1D, tex_plot);
+	glUniform1i(glGetUniformLocation(prog, "sampler_data"), 0);
+	glUniform1f(glGetUniformLocation(prog, "plot_min"), plot_min);
+	glUniform1f(glGetUniformLocation(prog, "plot_max"), plot_max);
+	draw_fullscreen(plot_size - 1);
 }
 
 void draw_aperture() {
@@ -142,23 +193,31 @@ void draw_starburst() {
 
 }
 
-// in-place transpose (square)
-// input data is interleaved real and imaginary parts (ie 2 elements per sample)
-void transpose(unsigned size, double *data) {
+// in-place 2D transpose (square)
+void transpose(unsigned size, complexd *data) {
 	for (unsigned i = 0; i < size; i++) {
 		for (unsigned j = i + 1; j < size; j++) {
-			unsigned k0 = 2 * size * i + 2 * j;
-			unsigned k1 = 2 * size * j + 2 * i;
-			swap(data[k0 + 0], data[k1 + 0]);
-			swap(data[k0 + 1], data[k1 + 1]);
+			unsigned k0 = size * i + j;
+			unsigned k1 = size * j + i;
+			swap(data[k0], data[k1]);
+		}
+	}
+}
+
+// in-place 1D reverse on multiple datasets (residing sequentially in memory)
+void flipud(unsigned size, unsigned count, complexd *data) {
+	for (unsigned i = 0; i < count; i++) {
+		for (unsigned j = 0; j < size / 2; j++) {
+			unsigned k0 = i * size + j;
+			unsigned k1 = i * size + size - j - 1;
+			swap(data[k0], data[k1]);
 		}
 	}
 }
 
 // in-place 1D FFT on multiple datasets (residing sequentially in memory)
-// input data is interleaved real and imaginary parts (ie 2 elements per sample)
 // result will need 'fftshifting'
-void fft(unsigned size, unsigned count, double *data) {
+void fft(unsigned size, unsigned count, complexd *data) {
 	using namespace gfft;
 
 	assert((size & (size - 1)) == 0 && "FFT: size must be a non-zero power of two");
@@ -180,14 +239,31 @@ void fft(unsigned size, unsigned count, double *data) {
 
 	// run the FFTs
 	for (unsigned i = 0; i < count; i++) {
-		gfft->fft(data + 2 * size * i);
+		gfft->fft(reinterpret_cast<double *>(data + size * i));
 	}
 
 }
 
+// in-place 1D inverse FFT on multiple datasets (residing sequentially in memory)
+// input should be un-fftshifted
+void ifft(unsigned size, unsigned count, complexd *data) {
+	// ifft(f) = fft(flipud(f)) / len(f)
+	
+	// reverse input in frequency domain
+	flipud(size, count, data);
+	
+	// FFT
+	fft(size, count, data);
+	
+	// scale
+	double scale = 1.0 / size;
+	for (complexd *f = data + size * count; f --> data; ) {
+		(*f) *= scale;
+	}
+}
+
 // in-place 2D FFT (square)
-// input data is interleaved real and imaginary parts (ie 2 elements per sample)
-void fft2(unsigned size, double *data) {
+void fft2(unsigned size, complexd *data) {
 
 	auto time0 = really_high_resolution_clock::now();
 
@@ -200,6 +276,159 @@ void fft2(unsigned size, double *data) {
 	double dt = chrono::duration_cast<chrono::duration<double>>(really_high_resolution_clock::now() - time0).count();
 
 	log("FFT2") << "size=" << size << ", took " << dt << "s";
+}
+
+// in-place 1D linear convolution using FFT (single dataset)
+// returns the actual size of the output (isize + ksize - 1)
+// data must point to a big enough region of memory (osize will be checked for this)
+unsigned fconv(unsigned isize, unsigned osize, complexd *data, unsigned ksize, const complexd *kdata) {
+	// minimum size to zero-pad for linear convolution (FFT produces circular convolution normally)
+	unsigned n = isize + ksize - 1;
+	// find next POT
+	unsigned p = 1 << unsigned(ceil(log2(n)));
+	assert(p <= osize && "output size is not big enough");
+	
+	// pad kernel and fft
+	vector<complexd> kdata2(p);
+	copy(kdata, kdata + ksize, kdata2.begin());
+	fft(p, 1, &kdata2[0]);
+	
+	// pad input
+	fill(data + isize, data + osize, 0);
+
+	// convolve
+	fft(p, 1, data);
+	for (unsigned j = 0; j < p; j++) {
+		data[j] *= kdata2[j];
+	}
+	ifft(p, 1, data);
+
+	// TODO is this output size right?
+	return n;
+}
+
+// in-place 1D FrFT on multiple datasets (residing sequentially in memory)
+void frft(unsigned size, unsigned count, complexd *data, double a) {
+	
+	struct impl {
+		static inline complexd chirp(const complexd &x, const complexd &k) {
+			return exp(k * complexd(0, 1) * math::pi() * pow(x, 2.0));
+		}
+	};
+
+	assert((size & (size - 1)) == 0 && "FrFT: size must be a non-zero power of two");
+	
+	// restrict interval, frft is periodic
+	a = fmod(fmod(a, 4.0) + 4.0, 4.0);
+
+	// special cases
+	if (a == 0.0) return;
+	if (a == 2.0) {
+		flipud(size, count, data);
+		return;
+	}
+
+	// reduce to calculable interval [0.5, 1.5]
+	if (a > 2.0) {
+		a -= 2.0;
+		flipud(size, count, data);
+	}
+	if (a > 1.5) {
+		a -= 1.0;
+		frft(size, count, data, 1.0);
+	}
+	if (a < 0.5) {
+		a += 1.0;
+		frft(size, count, data, -1.0);
+	}
+
+	// fractional order -> rotation angle
+	double phi = a * math::pi() * 0.5;
+
+	// allocate memory for upsampling and chirp functions
+	vector<complexd> f(size * 16), ch0(size * 4), ch1(size * 8 - 1);
+
+	// construct first chirp function for multiplication
+	for (unsigned j = 0; j < 4 * size; j++) {
+		double x = double(j - 2 * size) / sqrt(4.0 * size);
+		ch0[j] = impl::chirp(x, -tan(phi * 0.5));
+	}
+
+	preplot(4 * size, &ch0[0]);
+
+	// construct second chirp function for convolution
+	for (unsigned j = 0; j < 8 * size - 1; j++) {
+		double x = double(j - 4 * size + 1) / sqrt(4.0 * size);
+		ch1[j] = impl::chirp(x, 1.0 / sin(phi));
+	}
+
+	// normalizing constant
+	complexd scale = exp(complexd(0, -1) * (math::pi() * math::signum(sin(phi)) / 4.0 - 0.5 * phi)) / sqrt(4.0 * size * abs(sin(phi)));
+
+	// process the inputs seperately
+	for (unsigned i = 0; i < count; i++) {
+		
+		// upsample - sinc interpolation
+		// TODO is this correct? i have no idea; should i be using a non-circular convolution?
+		copy(data + i * size, data + (i + 1) * size, f.begin());
+		fft(size, 1, &f[0]);
+		// middlepad in fourier domain == upsample with low-pass filter
+		// TODO for some reason, we need to edge-pad; maybe to de-circularize something?
+		// the edge padding plays no part in upsampling
+		// edgepad and middlepad to a length of 4n
+		fill(f.begin() + size, f.end(), 0);
+		copy(f.begin(), f.begin() + size / 2, f.begin() + size);
+		copy(f.begin() + size / 2, f.begin() + size, f.begin() + size * 2 + size / 2);
+		fill(f.begin(), f.begin() + size, 0);
+		ifft(size * 2, 1, &f[size]);
+		
+		// chirp multiplication
+		// also include *2 factor to correct the result of the above ifft
+		for (unsigned j = 0; j < 4 * size; j++) {
+			f[j] *= ch0[j] * 2.0;
+		}
+
+		// chirp convolution
+		// why is the kernel size ~2x the data size?
+		fconv(4 * size, f.size(), &f[0], ch1.size(), &ch1[0]);
+
+		// strip edge padding from convolution
+		// by starting at this index and using a size of 4n
+		unsigned j0 = 4 * size - 1;
+
+		// chirp multiplication, again
+		// also do normalizing scale too
+		for (unsigned j = 0; j < 4 * size; j++) {
+			f[j0 + j] *= ch0[j] * scale;
+		}
+
+		// strip edge padding from (after) upsampling
+		// by starting at this index and using a size of 2n
+		j0 += size;
+
+		// decimate (not downsample) and copy back
+		for (unsigned j = 0; j < size; j++) {
+			data[i * size + j] = f[j0 + 2 * j];
+		}
+		
+	}
+	
+}
+
+// in-place 2D FrFT (square)
+void frft2(unsigned size, complexd *data, double a) {
+
+	auto time0 = really_high_resolution_clock::now();
+
+	// use seperability for 2D
+	frft(size, size, data, a);
+	transpose(size, data);
+	frft(size, size, data, a);
+	transpose(size, data);
+
+	double dt = chrono::duration_cast<chrono::duration<double>>(really_high_resolution_clock::now() - time0).count();
+
+	log("FrFT2") << "size=" << size << ", took " << dt << "s";
 }
 
 void load_rgb_sensitivities() {
@@ -255,7 +484,7 @@ void load_rgb_sensitivities() {
 
 void make_textures() {
 	
-	static const unsigned tex_size = 1024;
+	static const unsigned tex_size = 256;
 	
 	load_rgb_sensitivities();
 
@@ -324,30 +553,26 @@ void make_textures() {
 	glReadBuffer(GL_COLOR_ATTACHMENT0);
 	glReadPixels(0, 0, tex_size, tex_size, GL_RED, GL_FLOAT, &ap_raw[0]);
 	
-	// unpack aperture for FFT
-	vector<double> ap_temp(2 * tex_size * tex_size);
+	// copy aperture for FFT
+	vector<complexd> ap_temp(tex_size * tex_size);
 	for (unsigned i = 0; i < ap_raw.size(); i++) {
-		// flattened complex numbers
-		ap_temp[2 * i + 0] = ap_raw[i];
-		ap_temp[2 * i + 1] = 0;
+		ap_temp[i] = complexd(ap_raw[i], 0);
 	}
 
 	// FFT
 	fft2(tex_size, &ap_temp[0]);
 	
 	// repack aperture FFT
-	vector<float> ap_fft(2 * tex_size * tex_size);
+	vector<float> ap_fft(tex_size * tex_size);
 	for (unsigned i = 0; i < ap_raw.size(); i++) {
-		// flattened complex numbers - as amplitude and phase
+		// amplitude only
 		// this interpolates a lot better than real/imag
-		auto z = complex<double>(ap_temp[2 * i + 0], ap_temp[2 * i + 1]);
-		ap_fft[2 * i + 0] = abs(z);
-		ap_fft[2 * i + 1] = arg(z);
+		ap_fft[i] = abs(ap_temp[i]);
 	}
 
 	// upload aperture FFT texture
 	glBindTexture(GL_TEXTURE_2D, tex_ap_fft);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, tex_size, tex_size, 0, GL_RG, GL_FLOAT, &ap_fft[0]);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, tex_size, tex_size, 0, GL_RED, GL_FLOAT, &ap_fft[0]);
 	glGenerateMipmap(GL_TEXTURE_2D);
 	checkGL();
 	
@@ -360,13 +585,13 @@ void make_textures() {
 	exposure = 1.0;
 	draw_starburst();
 	checkGL();
-	vector<float> star_temp(4 * tex_size * tex_size);
-	glReadBuffer(GL_COLOR_ATTACHMENT0);
-	glReadPixels(0, 0, tex_size, tex_size, GL_RGBA, GL_FLOAT, &star_temp[0]);
 
 #ifdef NOT_DEFINED
 	// export starburst texture in plaintext
 	{
+		vector<float> star_temp(4 * tex_size * tex_size);
+		glReadBuffer(GL_COLOR_ATTACHMENT0);
+		glReadPixels(0, 0, tex_size, tex_size, GL_RGBA, GL_FLOAT, &star_temp[0]);
 		ofstream ofs("./starburst.txt");
 		ofs << tex_size << " " << tex_size << " " << "RGBA" << endl;
 		for (unsigned i = 0; i < tex_size; i++) {
@@ -378,6 +603,29 @@ void make_textures() {
 		}
 	}
 #endif
+
+	// copy aperture for FrFt
+	for (unsigned i = 0; i < ap_raw.size(); i++) {
+		ap_temp[i] = complexd(ap_raw[i], 0);
+	}
+
+	// FrFT
+	frft2(tex_size, &ap_temp[0], 0.2);
+
+	// repack aperture FrFT
+	vector<float> ap_frft(tex_size * tex_size);
+	for (unsigned i = 0; i < ap_raw.size(); i++) {
+		// amplitude only
+		// this interpolates a lot better than real/imag
+		ap_frft[i] = abs(ap_temp[i]);
+	}
+
+	// upload aperture FrFT texture
+	glBindTexture(GL_TEXTURE_2D, tex_ap_frft);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, tex_size, tex_size, 0, GL_RED, GL_FLOAT, &ap_frft[0]);
+	glGenerateMipmap(GL_TEXTURE_2D);
+	checkGL();
+
 	
 	// cleanup
 	checkGL();
@@ -712,9 +960,10 @@ void display(const size2i &size) {
 	
 	//draw_fullscreen();
 	
-	draw_starburst();
+	//draw_starburst();
 	//draw_aperture();
-	//draw_fourier(tex_ap_fft);
+	//draw_fourier(tex_ap_frft);
+	plot();
 
 	checkGL();
 
