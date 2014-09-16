@@ -349,16 +349,14 @@ void frft(unsigned size, unsigned count, complexd *data, double a) {
 	vector<complexd> f(size * 16), ch0(size * 4), ch1(size * 8 - 1);
 
 	// construct first chirp function for multiplication
-	for (unsigned j = 0; j < 4 * size; j++) {
-		double x = double(j - 2 * size) / sqrt(4.0 * size);
+	for (int j = 0; j < 4 * size; j++) {
+		double x = double(j - 2 * double(size)) / sqrt(4.0 * size);
 		ch0[j] = impl::chirp(x, -tan(phi * 0.5));
 	}
 
-	preplot(4 * size, &ch0[0]);
-
 	// construct second chirp function for convolution
-	for (unsigned j = 0; j < 8 * size - 1; j++) {
-		double x = double(j - 4 * size + 1) / sqrt(4.0 * size);
+	for (int j = 0; j < 8 * size - 1; j++) {
+		double x = double(j - 4 * double(size) + 1) / sqrt(4.0 * size);
 		ch1[j] = impl::chirp(x, 1.0 / sin(phi));
 	}
 
@@ -484,7 +482,7 @@ void load_rgb_sensitivities() {
 
 void make_textures() {
 	
-	static const unsigned tex_size = 256;
+	static const unsigned tex_size = 1024;
 	
 	load_rgb_sensitivities();
 
@@ -610,7 +608,7 @@ void make_textures() {
 	}
 
 	// FrFT
-	frft2(tex_size, &ap_temp[0], 0.2);
+	frft2(tex_size, &ap_temp[0], 0.1);
 
 	// repack aperture FrFT
 	vector<float> ap_frft(tex_size * tex_size);
@@ -962,8 +960,8 @@ void display(const size2i &size) {
 	
 	//draw_starburst();
 	//draw_aperture();
-	//draw_fourier(tex_ap_frft);
-	plot();
+	draw_fourier(tex_ap_frft);
+	//plot();
 
 	checkGL();
 
@@ -999,8 +997,14 @@ int main(int argc, char *argv[]) {
 		if (e.key == GLFW_KEY_LEFT) rot = quatd::axisangle(vec3d::j(), rot_angle);
 		light_norm = ~(rot * light_norm);
 
-		if (e.key == GLFW_KEY_EQUAL) exposure *= 1.2;
-		if (e.key == GLFW_KEY_MINUS) exposure /= 1.2;
+		if (e.key == GLFW_KEY_EQUAL) {
+			exposure *= 1.2;
+			log("exposure") << exposure;
+		}
+		if (e.key == GLFW_KEY_MINUS) {
+			exposure /= 1.2;
+			log("exposure") << exposure;
+		}
 
 		return false;
 	});

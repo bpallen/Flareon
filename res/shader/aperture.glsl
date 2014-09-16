@@ -63,7 +63,7 @@ void main() {
 	
 	// this produces fairly random (though somewhat grid-aligned) smoothed circular points
 	
-	float spot = 20.0;
+	float spot = 1.0;
 	
 	vec2 fc0 = floor(gl_FragCoord.xy / spot);
 	vec2 fc1 = fc0 * spot + spot * 0.5 + 0.5;

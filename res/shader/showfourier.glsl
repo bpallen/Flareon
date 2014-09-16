@@ -16,7 +16,7 @@ vec3 hdr(vec3 e) {
 
 void main() {
 	
-	float a = texture(sampler_fourier, texCoord + 0.5).r;
+	float a = texture(sampler_fourier, texCoord).r;
 
 	float p = a * a;
 
