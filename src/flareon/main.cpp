@@ -53,7 +53,10 @@ GLuint tex_ap = 0;
 GLuint tex_ap_fft = 0;
 GLuint tex_ap_frft = 0;
 GLuint tex_star = 0;
-GLuint tex_ghost = 0;
+
+unsigned frft_layers = 20;
+double frft_min, frft_max;
+double frft_order = 0.0;
 
 // wavelength to optimize antireflective coating for
 double wavelen_ar = 550e-9;
@@ -154,7 +157,7 @@ void draw_aperture() {
 	GLuint prog_ap = shaderman->getProgram("aperture.glsl");
 	glUseProgram(prog_ap);
 	glUniform1ui(glGetUniformLocation(prog_ap, "sides"), 8);
-	glUniform1f(glGetUniformLocation(prog_ap, "radius"), 0.5);
+	glUniform1f(glGetUniformLocation(prog_ap, "radius"), 0.8);
 	draw_fullscreen();
 }
 
@@ -168,6 +171,22 @@ void draw_fourier(GLuint tex) {
 
 	glUniform1f(glGetUniformLocation(prog, "exposure"), exposure);
 	glUniform1i(glGetUniformLocation(prog, "sampler_fourier"), 0);
+
+	draw_fullscreen();
+
+}
+
+void draw_frft(GLuint tex) {
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_3D, tex);
+
+	GLuint prog = shaderman->getProgram("showfrft.glsl");
+	glUseProgram(prog);
+
+	glUniform1f(glGetUniformLocation(prog, "exposure"), exposure);
+	glUniform1f(glGetUniformLocation(prog, "tz"), (frft_order - frft_min) / (frft_max - frft_min));
+	glUniform1i(glGetUniformLocation(prog, "sampler_frft"), 0);
 
 	draw_fullscreen();
 
@@ -482,7 +501,7 @@ void load_rgb_sensitivities() {
 
 void make_textures() {
 	
-	static const unsigned tex_size = 1024;
+	static const unsigned tex_size = 256;
 	
 	load_rgb_sensitivities();
 
@@ -510,11 +529,12 @@ void make_textures() {
 	
 	if (!tex_ap_frft) {
 		glGenTextures(1, &tex_ap_frft);
-		glBindTexture(GL_TEXTURE_2D, tex_ap_frft);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		glBindTexture(GL_TEXTURE_3D, tex_ap_frft);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 	}
 	
 	if (!tex_star) {
@@ -526,16 +546,6 @@ void make_textures() {
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		// TODO 32f for the moment
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
-	}
-	
-	if (!tex_ghost) {
-		glGenTextures(1, &tex_ghost);
-		glBindTexture(GL_TEXTURE_2D, tex_ghost);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, tex_size, tex_size, 0, GL_RGBA, GL_FLOAT, nullptr);
 	}
 	
 	// draw the aperture transmission function
@@ -601,29 +611,42 @@ void make_textures() {
 		}
 	}
 #endif
+	
+	frft_min = -0.5 / (frft_layers - 1);
+	frft_max = 1.0 - frft_min;
+	
+	glBindTexture(GL_TEXTURE_3D, tex_ap_frft);
+	glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, tex_size, tex_size, frft_layers, 0, GL_RED, GL_FLOAT, nullptr);
+	
+	// generate 3D FrFT texture
+	for (unsigned i = 0; i < frft_layers; i++) {
+		
+		double a = (i + 0.5) / frft_layers * (frft_max - frft_min) + frft_min;
+		
+		// copy aperture for FrFt
+		for (unsigned i = 0; i < ap_raw.size(); i++) {
+			ap_temp[i] = complexd(ap_raw[i], 0);
+		}
 
-	// copy aperture for FrFt
-	for (unsigned i = 0; i < ap_raw.size(); i++) {
-		ap_temp[i] = complexd(ap_raw[i], 0);
+		// FrFT
+		frft2(tex_size, &ap_temp[0], a);
+
+		// repack aperture FrFT
+		vector<float> ap_frft(tex_size * tex_size);
+		for (unsigned i = 0; i < ap_raw.size(); i++) {
+			// amplitude only
+			// this interpolates a lot better than real/imag
+			ap_frft[i] = abs(ap_temp[i]);
+		}
+
+		// upload aperture FrFT texture
+		glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, i, tex_size, tex_size, 1, GL_RED, GL_FLOAT, &ap_frft[0]);
+		
+		checkGL();
+	
 	}
-
-	// FrFT
-	frft2(tex_size, &ap_temp[0], 0.1);
-
-	// repack aperture FrFT
-	vector<float> ap_frft(tex_size * tex_size);
-	for (unsigned i = 0; i < ap_raw.size(); i++) {
-		// amplitude only
-		// this interpolates a lot better than real/imag
-		ap_frft[i] = abs(ap_temp[i]);
-	}
-
-	// upload aperture FrFT texture
-	glBindTexture(GL_TEXTURE_2D, tex_ap_frft);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, tex_size, tex_size, 0, GL_RED, GL_FLOAT, &ap_frft[0]);
-	glGenerateMipmap(GL_TEXTURE_2D);
-	checkGL();
-
+	
+	glGenerateMipmap(GL_TEXTURE_3D);
 	
 	// cleanup
 	checkGL();
@@ -922,13 +945,21 @@ void display(const size2i &size) {
 	glUniform3fv(glGetUniformLocation(prog_flare, "light_norm"), 1, vec3f(light_norm));
 	glUniform1ui(glGetUniformLocation(prog_flare, "num_wavelengths"), num_wavelengths);
 	glUniform4fv(glGetUniformLocation(prog_flare, "wavelengths"), num_wavelengths, wavelengths);
-
+	glUniform1f(glGetUniformLocation(prog_flare, "frft_min"), frft_min);
+	glUniform1f(glGetUniformLocation(prog_flare, "frft_max"), frft_max);
+	
+	// frft texture
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_3D, tex_ap_frft);
+	glUniform1i(glGetUniformLocation(prog_flare, "sampler_frft"), 0);
+	
 	checkGL();
 	
 	// temp
 	//glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 	
-	// instance the ghosts (batched by complexity == grid resolution)
+	// instance the ghosts
+	// TODO batched by complexity == grid resolution
 	// blend ghosts together
 	glDisable(GL_CULL_FACE);
 	glDisable(GL_DEPTH_TEST);
@@ -936,7 +967,7 @@ void display(const size2i &size) {
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
 	glUniform1ui(glGetUniformLocation(prog_flare, "num_quads"), 64 * 64);
-	//draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
+	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
 	glDisable(GL_BLEND);
 	checkGL();
 	
@@ -956,11 +987,12 @@ void display(const size2i &size) {
 	glUniform1i(glGetUniformLocation(prog_hdr, "sampler_hdr"), 0);
 	glUniform1f(glGetUniformLocation(prog_hdr, "exposure"), exposure);
 	
-	//draw_fullscreen();
+	draw_fullscreen();
 	
+	//draw_frft(tex_ap_frft);
 	//draw_starburst();
 	//draw_aperture();
-	draw_fourier(tex_ap_frft);
+	//draw_fourier(tex_ap_fft);
 	//plot();
 
 	checkGL();
@@ -1004,6 +1036,15 @@ int main(int argc, char *argv[]) {
 		if (e.key == GLFW_KEY_MINUS) {
 			exposure /= 1.2;
 			log("exposure") << exposure;
+		}
+		
+		if (e.key == GLFW_KEY_PERIOD) {
+			frft_order += 0.05;
+			log("frft") << frft_order;
+		}
+		if (e.key == GLFW_KEY_COMMA) {
+			frft_order -= 0.05;
+			log("frft") << frft_order;
 		}
 
 		return false;

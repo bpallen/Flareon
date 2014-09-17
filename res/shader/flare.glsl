@@ -82,9 +82,17 @@ layout(std140) uniform BouncesBlock {
 // wavelengths
 uniform uint num_wavelengths;
 // rgb: weights for RGB conversion, w: wavelength
+// TODO use the sensitivity texture?
 uniform vec4 wavelengths[MAX_WAVELENGTHS];
 
-// TODO textures
+// min/max frft orders (texture boundaries)
+uniform float frft_min;
+uniform float frft_max;
+
+// textures
+uniform sampler3D sampler_frft;
+
+// TODO starburst texture
 
 Intersection intersect_plane(Ray ray, LensInterface li) {
 	Intersection isect;
@@ -367,7 +375,19 @@ void main() {
 	
 	//frag_color = vec4(0.2 * (vertex_in.tex.xy * 0.5 + 0.5), 0.0, 1.0);
 	
-	frag_color = vec4(1000.0 * vertex_in.tex.a * wavelengths[vertex_in.wid].rgb, 1.0);
+	// TODO f-stop
+	float a = 0.15 * wavelengths[vertex_in.wid].w / 400e-9 * (5.0 / 18.0);
+	
+	float frft = texture(sampler_frft,
+		vec3(
+			vertex_in.tex.xy * 0.5 + 0.5,
+			(a - frft_min) / (frft_max - frft_min)
+		)
+	).r;
+	
+	frag_color = vec4(1000.0 * vertex_in.tex.a * wavelengths[vertex_in.wid].rgb * frft, 1.0);
+	
+	//frag_color = vec4(vertex_in.tex.xy, 0.0, 1.0);
 	
 	// TODO sensible irradiance ?
 }
