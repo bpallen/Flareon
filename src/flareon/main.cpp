@@ -290,7 +290,7 @@ unsigned fconv(unsigned isize, unsigned osize, complexd *data, unsigned ksize, c
 	
 	// pad kernel and fft
 	vector<complexd> kdata2(p);
-	copy(kdata, kdata + ksize, kdata2.begin());
+	copy(kdata, kdata + ksize, &kdata2[0]);
 	fft(p, 1, &kdata2[0]);
 	
 	// pad input
@@ -368,16 +368,16 @@ void frft(unsigned size, unsigned count, complexd *data, double a) {
 		
 		// upsample - sinc interpolation
 		// TODO is this correct? i have no idea; should i be using a non-circular convolution?
-		copy(data + i * size, data + (i + 1) * size, f.begin());
+		copy(data + i * size, data + (i + 1) * size, &f[0]);
 		fft(size, 1, &f[0]);
 		// middlepad in fourier domain == upsample with low-pass filter
 		// TODO for some reason, we need to edge-pad; maybe to de-circularize something?
 		// the edge padding plays no part in upsampling
 		// edgepad and middlepad to a length of 4n
-		fill(f.begin() + size, f.end(), 0);
-		copy(f.begin(), f.begin() + size / 2, f.begin() + size);
-		copy(f.begin() + size / 2, f.begin() + size, f.begin() + size * 2 + size / 2);
-		fill(f.begin(), f.begin() + size, 0);
+		fill(&f[size], &f[f.size()], 0);
+		copy(&f[0], &f[size / 2], &f[size]);
+		copy(&f[size / 2], &f[size], &f[size * 2 + size / 2]);
+		fill(&f[0], &f[size], 0);
 		ifft(size * 2, 1, &f[size]);
 		
 		// chirp multiplication
