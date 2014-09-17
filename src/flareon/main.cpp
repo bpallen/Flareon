@@ -393,7 +393,7 @@ void frft(unsigned size, unsigned count, complexd *data, double a) {
 		// TODO for some reason, we need to edge-pad; maybe to de-circularize something?
 		// the edge padding plays no part in upsampling
 		// edgepad and middlepad to a length of 4n
-		fill(&f[size], &f[f.size()], 0);
+		fill(&f[size], &f[0] + f.size(), 0);
 		copy(&f[0], &f[size / 2], &f[size]);
 		copy(&f[size / 2], &f[size], &f[size * 2 + size / 2]);
 		fill(&f[0], &f[size], 0);
@@ -501,7 +501,7 @@ void load_rgb_sensitivities() {
 
 void make_textures() {
 	
-	static const unsigned tex_size = 256;
+	static const unsigned tex_size = 1024;
 	
 	load_rgb_sensitivities();
 
