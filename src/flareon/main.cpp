@@ -266,13 +266,11 @@ void fft(unsigned size, unsigned count, complexd *data) {
 // in-place 1D inverse FFT on multiple datasets (residing sequentially in memory)
 // input should be un-fftshifted
 void ifft(unsigned size, unsigned count, complexd *data) {
-	// ifft(f) = fft(flipud(f)) / len(f)
-	
-	// reverse input in frequency domain
-	flipud(size, count, data);
-	
-	// FFT
+
+	// conj -> fft -> conj
+	transform(data, data + count * size, data, [](complexd x) { return conj(x); });
 	fft(size, count, data);
+	transform(data, data + count * size, data, [](complexd x) { return conj(x); });
 	
 	// scale
 	double scale = 1.0 / size;
@@ -295,6 +293,22 @@ void fft2(unsigned size, complexd *data) {
 	double dt = chrono::duration_cast<chrono::duration<double>>(really_high_resolution_clock::now() - time0).count();
 
 	log("FFT2") << "size=" << size << ", took " << dt << "s";
+}
+
+// in-place 2D inverse FFT (square)
+void ifft2(unsigned size, complexd *data) {
+
+	auto time0 = really_high_resolution_clock::now();
+
+	// use separability for 2D
+	ifft(size, size, data);
+	transpose(size, data);
+	ifft(size, size, data);
+	transpose(size, data);
+
+	double dt = chrono::duration_cast<chrono::duration<double>>(really_high_resolution_clock::now() - time0).count();
+
+	log("iFFT2") << "size=" << size << ", took " << dt << "s";
 }
 
 // in-place 1D linear convolution using FFT (single dataset)
@@ -501,7 +515,7 @@ void load_rgb_sensitivities() {
 
 void make_textures() {
 	
-	static const unsigned tex_size = 1024;
+	static const unsigned tex_size = 512;
 	
 	load_rgb_sensitivities();
 
@@ -919,7 +933,7 @@ void display(const size2i &size) {
 
 	// height of the sensor
 	// temp - set to fraction of diameter of first interface's aperture
-	double sensor_h = interfaces[0].ar * 2;
+	double sensor_h = 0.035; //interfaces[0].ar * 2;
 
 	// orthographic projection, just to scale things properly
 	mat4d proj = mat4d::scale(double(size.h) / double(size.w), 1.0, 1.0) * mat4d::scale(2.0 / sensor_h);
@@ -967,7 +981,7 @@ void display(const size2i &size) {
 	glBlendEquation(GL_FUNC_ADD);
 	glBlendFunc(GL_ONE, GL_ONE);
 	glUniform1ui(glGetUniformLocation(prog_flare, "num_quads"), 64 * 64);
-	draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
+	//draw_fullscreen_grid_adjacency_border_instanced<64, 64>(num_ghosts * num_wavelengths);
 	glDisable(GL_BLEND);
 	checkGL();
 	
@@ -987,9 +1001,9 @@ void display(const size2i &size) {
 	glUniform1i(glGetUniformLocation(prog_hdr, "sampler_hdr"), 0);
 	glUniform1f(glGetUniformLocation(prog_hdr, "exposure"), exposure);
 	
-	draw_fullscreen();
+	//draw_fullscreen();
 	
-	//draw_frft(tex_ap_frft);
+	draw_frft(tex_ap_frft);
 	//draw_starburst();
 	//draw_aperture();
 	//draw_fourier(tex_ap_fft);
